@@ -81,7 +81,13 @@ export async function probeFile(file: File): Promise<Asset> {
 
 export function materialFor(asset: Asset): VideoMaterial | AudioMaterial {
   if (asset.kind === 'audio') {
-    return { id: newId(), type: 'audio', path: asset.name, duration: asset.duration }
+    return {
+      id: newId(),
+      type: 'audio',
+      name: asset.name,
+      path: asset.name,
+      duration: asset.duration,
+    }
   }
   return {
     id: newId(),

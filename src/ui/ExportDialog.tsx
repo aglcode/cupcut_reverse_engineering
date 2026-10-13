@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { exportDraft, recommendedBitrate, type ExportResult } from '../engine/exporter'
+import {
+  availableCodecs,
+  CODECS,
+  exportDraft,
+  recommendedBitrate,
+  type ExportCodec,
+  type ExportResult,
+} from '../engine/exporter'
 import { missingMedia } from '../engine/media'
+import { effectiveRange, hasExportRange } from '../model/exportRange'
+import { formatTimecode } from '../model/time'
 import { useEditor } from '../state/store'
 
 const HEIGHTS = [2160, 1440, 1080, 720, 480]
@@ -22,12 +31,18 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [height, setHeight] = useState(canvas.height)
   const [fps, setFps] = useState(draft.fps)
   const [mbps, setMbps] = useState<number | null>(null)
+  const [codec, setCodec] = useState<ExportCodec>('avc')
+  // What this machine can encode at the chosen size; H.264 until that is known.
+  const [codecs, setCodecs] = useState<ExportCodec[]>(['avc'])
+  const marked = hasExportRange(draft)
+  const [rangeOnly, setRangeOnly] = useState(marked)
+  const range = rangeOnly && marked ? effectiveRange(draft) : { start: 0, duration: draft.duration }
   const [status, setStatus] = useState<Status>({ step: 'idle' })
   const abort = useRef<AbortController | null>(null)
 
   const width = even((canvas.width * height) / canvas.height)
   const outHeight = even(height)
-  const suggested = recommendedBitrate(width, outHeight, fps) / 1_000_000
+  const suggested = recommendedBitrate(width, outHeight, fps, codec) / 1_000_000
   const bitrate = mbps ?? suggested
   const missing = missingMedia(draft, assets)
   const heights = [...new Set([canvas.height, ...HEIGHTS])].sort((a, b) => b - a)
@@ -37,6 +52,18 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     if (url) URL.revokeObjectURL(url)
   }, [url])
   useEffect(() => () => abort.current?.abort(), [])
+  useEffect(() => {
+    let current = true
+    void availableCodecs(width, outHeight).then((found) => {
+      if (!current) return
+      setCodecs(found)
+      // Fall back if the chosen one is not possible at this size.
+      setCodec((chosen) => (found.includes(chosen) ? chosen : (found[0] ?? 'avc')))
+    })
+    return () => {
+      current = false
+    }
+  }, [width, outHeight])
 
   const start = async () => {
     useEditor.getState().setPlaying(false)
@@ -47,7 +74,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       const result = await exportDraft(
         draft,
         assets,
-        { width, height: outHeight, fps, videoBitrate: bitrate * 1_000_000, audioBitrate: 192_000 },
+        {
+          width,
+          height: outHeight,
+          fps,
+          videoBitrate: bitrate * 1_000_000,
+          audioBitrate: 192_000,
+          codec,
+          range,
+        },
         (progress) => setStatus({ step: 'running', progress }),
         controller.signal,
       )
@@ -88,6 +123,23 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </select>
         </label>
         <label className="field">
+          <span>Format</span>
+          <select
+            value={codec}
+            disabled={running}
+            onChange={(e) => {
+              setCodec(e.target.value as ExportCodec)
+              setMbps(null)
+            }}
+          >
+            {CODECS.filter((c) => codecs.includes(c.codec)).map((c) => (
+              <option key={c.codec} value={c.codec}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
           <span>Bitrate</span>
           <span className="field-input">
             <input
@@ -102,7 +154,24 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             <span className="suffix">Mbps</span>
           </span>
         </label>
-        <p className="hint">MP4 with stereo audio at 192 kbps. Suggested bitrate: {suggested} Mbps.</p>
+        <p className="hint">
+          MP4 with stereo audio at 192 kbps. Suggested bitrate: {suggested} Mbps. Formats this
+          computer cannot encode are not listed.
+        </p>
+        <label className="range-choice">
+          <input
+            type="checkbox"
+            checked={rangeOnly && marked}
+            disabled={running || !marked}
+            onChange={(e) => setRangeOnly(e.target.checked)}
+          />
+          {marked
+            ? `Only the marked range, ${formatTimecode(effectiveRange(draft).start, draft.fps)} to ${formatTimecode(
+                effectiveRange(draft).start + effectiveRange(draft).duration,
+                draft.fps,
+              )}`
+            : 'Only the marked range (mark one with I and O on the timeline)'}
+        </label>
 
         {missing.length > 0 && (
           <p className="notice error" role="alert">
@@ -143,7 +212,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 className="primary"
-                disabled={draft.duration === 0 || missing.length > 0 || !(bitrate > 0)}
+                disabled={range.duration === 0 || missing.length > 0 || !(bitrate > 0)}
                 onClick={() => void start()}
               >
                 Export

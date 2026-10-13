@@ -33,7 +33,17 @@ export type KeyframeProperty =
   | 'KFTypeAlpha'
   | 'KFTypeVolume'
 
-export type Keyframe = { id: string; time_offset: number; values: number[] }
+export type Point = { x: number; y: number }
+
+// left_control and right_control are bezier handles for easing into and out
+// of the keyframe. See easing.ts.
+export type Keyframe = {
+  id: string
+  time_offset: number
+  values: number[]
+  left_control: Point
+  right_control: Point
+}
 
 export type KeyframeList = {
   id: string
@@ -46,6 +56,11 @@ export type TransitionName = 'Mix' | 'Fade' | 'Wipe' | 'Slide'
 
 // Transition from this segment into the next one. See transitions.ts.
 export type Transition = { name: TransitionName; duration: number }
+
+// What fills the frame behind a video clip. See background.ts.
+export type CanvasBackground =
+  | { type: 'canvas_color'; color: string }
+  | { type: 'canvas_blur'; blur: number }
 
 export type AudioFade = { fade_in_duration: number; fade_out_duration: number }
 
@@ -65,6 +80,12 @@ export type Segment = {
   // See fades.ts. null when the segment has no fade.
   audio_fade: AudioFade | null
   transition: Transition | null
+  canvas: CanvasBackground | null
+  // See timing.ts. A freeze frame holds the frame at source_timerange.start.
+  reverse: boolean
+  freeze: boolean
+  // Clips with the same non-empty group_id are linked. See links.ts.
+  group_id: string
 }
 
 export type TrackType = 'video' | 'audio' | 'text'
@@ -91,8 +112,32 @@ export type VideoMaterial = {
 export type AudioMaterial = {
   id: string
   type: 'audio'
+  // Shown on the clip. The file name, or "Extracted-n" for audio taken from a video.
+  name: string
   path: string
   duration: number
+}
+
+// See textStyle.ts for defaults and what is and is not a CapCut field.
+export type TextStyle = {
+  font_family: string
+  bold: boolean
+  italic: boolean
+  underline: boolean
+  alignment: number // 0 left, 1 centre, 2 right
+  letter_spacing: number
+  line_spacing: number
+  border_color: string
+  border_width: number
+  has_shadow: boolean
+  shadow_color: string
+  shadow_alpha: number
+  shadow_smoothing: number
+  shadow_distance: number
+  shadow_angle: number
+  background_color: string
+  background_alpha: number
+  background_round_radius: number
 }
 
 export type TextMaterial = {
@@ -101,7 +146,7 @@ export type TextMaterial = {
   content: string
   font_size: number
   text_color: string
-}
+} & TextStyle
 
 export type Materials = {
   videos: VideoMaterial[]
@@ -116,6 +161,11 @@ export type Draft = {
   fps: number
   duration: number
   canvas_config: { width: number; height: number }
+  // maintrack_adsorb is the main-track magnet, under the name CapCut drafts
+  // use: while on, the first video track is kept packed from zero with no gaps.
+  // export_range is the part of the timeline an export covers; null is all
+  // of it. See exportRange.ts.
+  config: { maintrack_adsorb: boolean; export_range: TimeRange | null }
   // Array order is render order: later tracks draw on top.
   tracks: Track[]
   materials: Materials
@@ -139,6 +189,7 @@ export function emptyDraft(): Draft {
     fps: 30,
     duration: 0,
     canvas_config: { width: 1920, height: 1080 },
+    config: { maintrack_adsorb: false, export_range: null },
     tracks: [{ id: newId(), type: 'video', name: 'Video 1', segments: [] }],
     materials: { videos: [], audios: [], texts: [] },
   }

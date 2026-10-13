@@ -3,6 +3,7 @@
 // silently dropped.
 
 import { cropRect, FULL_CROP, isAxisAligned, rectToCrop } from './crop'
+import { DEFAULT_TEXT_STYLE, normalizeColor } from './textStyle'
 import { frameDuration, snapToFrame } from './time'
 import {
   DEFAULT_CLIP,
@@ -10,6 +11,7 @@ import {
   segmentEnd,
   type AudioFade,
   type AudioMaterial,
+  type CanvasBackground,
   type Clip,
   type Crop,
   type Draft,
@@ -57,16 +59,29 @@ function rgbToHex(rgb: unknown): string | null {
 
 // Text content is rich-text JSON stored inside a string:
 // {"text":"GAS","styles":[{"fill":{"content":{"solid":{"color":[r,g,b]}}},"size":15,…}]}
-function readText(m: Json): TextMaterial {
+// `mixed` is true when the text has several differently styled ranges; only
+// the first is used.
+function readText(m: Json): { material: TextMaterial; mixed: boolean } {
   let content = asString(m.content)
   let size = asNumber(m.font_size, 15)
-  let color = asString(m.text_color) || '#ffffff'
+  let color = normalizeColor(asString(m.text_color)) || '#ffffff'
+  let mixed = false
+  // Weight and slant live on the material as bold_width and italic_degree, and
+  // on newer drafts also as flags on the style range.
+  let bold = asNumber(m.bold_width, 0) > 0
+  let italic = asNumber(m.italic_degree, 0) > 0
+  let underline = m.underline === true
   try {
     const rich: unknown = JSON.parse(content)
     if (isObject(rich)) {
       content = asString(rich.text)
-      const style = asArray(rich.styles)[0]
+      const styles = asArray(rich.styles)
+      mixed = styles.length > 1
+      const style = styles[0]
       if (style) {
+        bold ||= style.bold === true
+        italic ||= style.italic === true
+        underline ||= style.underline === true
         size = asNumber(style.size, size)
         const fill = isObject(style.fill) && isObject(style.fill.content) ? style.fill.content : null
         const solid = fill && isObject(fill.solid) ? fill.solid : null
@@ -76,7 +91,34 @@ function readText(m: Json): TextMaterial {
   } catch {
     // Older drafts store plain text here.
   }
-  return { id: asString(m.id), type: 'text', content, font_size: size, text_color: color }
+  const d = DEFAULT_TEXT_STYLE
+  const material: TextMaterial = {
+    id: asString(m.id),
+    type: 'text',
+    content,
+    font_size: size,
+    text_color: color,
+    // CapCut's font is a downloaded file that cannot be loaded here.
+    font_family: d.font_family,
+    bold,
+    italic,
+    underline,
+    alignment: [0, 1, 2].includes(m.alignment as number) ? (m.alignment as number) : d.alignment,
+    letter_spacing: asNumber(m.letter_spacing, d.letter_spacing),
+    line_spacing: asNumber(m.line_spacing, d.line_spacing),
+    border_color: normalizeColor(asString(m.border_color)),
+    border_width: asNumber(m.border_width, d.border_width),
+    has_shadow: m.has_shadow === true,
+    shadow_color: normalizeColor(asString(m.shadow_color)),
+    shadow_alpha: asNumber(m.shadow_alpha, d.shadow_alpha),
+    shadow_smoothing: asNumber(m.shadow_smoothing, d.shadow_smoothing),
+    shadow_distance: asNumber(m.shadow_distance, d.shadow_distance),
+    shadow_angle: asNumber(m.shadow_angle, d.shadow_angle),
+    background_color: normalizeColor(asString(m.background_color)),
+    background_alpha: asNumber(m.background_alpha, d.background_alpha),
+    background_round_radius: asNumber(m.background_round_radius, d.background_round_radius),
+  }
+  return { material, mixed }
 }
 
 function readClip(v: unknown): Clip {
@@ -126,29 +168,29 @@ const KEYFRAME_PROPERTIES: Record<TrackType, KeyframeProperty[]> = {
 
 // Reads segment.common_keyframes. CapCut also keyframes colour properties
 // alongside every transform keyframe; those have nothing to drive here and are
-// skipped. `eased` reports keyframes whose curve is not the linear "Line" type.
-function readKeyframes(v: unknown, type: TrackType): { lists: KeyframeList[]; eased: boolean } {
+// skipped. Easing comes across as the bezier handles CapCut stores.
+function readKeyframes(v: unknown, type: TrackType): KeyframeList[] {
   const lists: KeyframeList[] = []
-  let eased = false
+  const point = (p: unknown) =>
+    isObject(p) ? { x: asNumber(p.x, 0), y: asNumber(p.y, 0) } : { x: 0, y: 0 }
   for (const k of asArray(v)) {
     const property = KEYFRAME_PROPERTIES[type].find((p) => p === k.property_type)
     if (!property) continue
     const keyframe_list = asArray(k.keyframe_list)
       .filter((f) => Array.isArray(f.values) && typeof f.values[0] === 'number')
-      .map((f) => {
-        if (f.curveType !== undefined && f.curveType !== 'Line') eased = true
-        return {
-          id: asString(f.id) || newId(),
-          time_offset: asNumber(f.time_offset, 0),
-          values: [(f.values as number[])[0]],
-        }
-      })
+      .map((f) => ({
+        id: asString(f.id) || newId(),
+        time_offset: asNumber(f.time_offset, 0),
+        values: [(f.values as number[])[0]],
+        left_control: point(f.left_control),
+        right_control: point(f.right_control),
+      }))
       .sort((a, b) => a.time_offset - b.time_offset)
     if (keyframe_list.length) {
       lists.push({ id: asString(k.id) || newId(), property_type: property, keyframe_list })
     }
   }
-  return { lists, eased }
+  return lists
 }
 
 // Features that live in a segment's extra_material_refs and are not rendered here.
@@ -207,12 +249,18 @@ export function importCapCutDraft(json: unknown): ImportResult {
     audios.set(asString(m.id), {
       id: asString(m.id),
       type: 'audio',
+      name: asString(m.name) || baseName(asString(m.path)),
       path: baseName(asString(m.path)),
       duration: asNumber(m.duration, 0),
     })
   }
   const texts = new Map<string, TextMaterial>()
-  for (const m of asArray(materialsIn.texts)) texts.set(asString(m.id), readText(m))
+  const mixedTexts = new Set<string>()
+  for (const m of asArray(materialsIn.texts)) {
+    const { material, mixed } = readText(m)
+    texts.set(material.id, material)
+    if (mixed) mixedTexts.add(material.id)
+  }
 
   // id -> [material array name, material], for resolving extra_material_refs.
   const refIndex = new Map<string, [string, Json]>()
@@ -224,11 +272,13 @@ export function importCapCutDraft(json: unknown): ImportResult {
   const skippedTracks = new Map<string, number>()
   const unsupportedRefs = new Map<string, number>()
   let curveSpeed = 0
-  let eased = 0
   let replacedTransitions = 0
+  let imageBackgrounds = 0
+  let reversed = 0
   let dropped = 0
   const counts: Record<TrackType, number> = { video: 0, audio: 0, text: 0 }
   const tracks: Track[] = []
+  const mainTrackIds = new Set<string>()
 
   for (const t of asArray(json.tracks)) {
     const type = asString(t.type)
@@ -258,6 +308,7 @@ export function importCapCutDraft(json: unknown): ImportResult {
       let isCurve = false
       let fade: AudioFade | null = null
       let transition: Transition | null = null
+      let canvas: CanvasBackground | null = null
       const seen = new Set<string>()
       for (const ref of refs) {
         const hit = refIndex.get(asString(ref))
@@ -265,6 +316,19 @@ export function importCapCutDraft(json: unknown): ImportResult {
         const [kind, m] = hit
         if (kind === 'speeds' && (m.mode === 1 || isObject(m.curve_speed))) isCurve = true
         if (kind === 'audio_fades') fade = readFade(m)
+        if (kind === 'canvases' && type === 'video') {
+          // No local draft sets a background, so this follows the field names
+          // alone; the scale of the blur value in CapCut is not known.
+          const color = normalizeColor(asString(m.color))
+          const blur = asNumber(m.blur, 0)
+          if (m.type === 'canvas_blur' || (m.type !== 'canvas_image' && blur > 0)) {
+            canvas = { type: 'canvas_blur', blur: Math.min(1, Math.max(0, blur)) }
+          } else if (m.type === 'canvas_image' || asString(m.image)) {
+            imageBackgrounds++
+          } else if (color) {
+            canvas = { type: 'canvas_color', color }
+          }
+        }
         if (kind === 'transitions' && type === 'video') {
           // Only CapCut's cross-dissolve has an equivalent here; any other
           // look becomes a Mix of the same length.
@@ -275,8 +339,8 @@ export function importCapCutDraft(json: unknown): ImportResult {
       }
       for (const kind of seen) unsupportedRefs.set(kind, (unsupportedRefs.get(kind) ?? 0) + 1)
       if (isCurve) curveSpeed++
+      if (type === 'video' && s.reverse === true) reversed++
       const keyframes = readKeyframes(s.common_keyframes, type)
-      if (keyframes.eased) eased++
 
       const speed = asNumber(s.speed, 1) || 1
       const source = timeRange(s.source_timerange)
@@ -297,16 +361,22 @@ export function importCapCutDraft(json: unknown): ImportResult {
         volume: asNumber(s.volume, 1),
         clip: type === 'audio' ? null : readClip(s.clip),
         visible: s.visible !== false,
-        common_keyframes: keyframes.lists,
+        common_keyframes: keyframes,
         audio_fade: type === 'text' ? null : fade,
         transition,
+        canvas,
+        reverse: type === 'video' && s.reverse === true,
+        freeze: false,
+        group_id: asString(s.group_id),
       })
     }
     segments.sort((a, b) => a.target_timerange.start - b.target_timerange.start)
     counts[type]++
     const label = type === 'video' ? 'Video' : type === 'audio' ? 'Audio' : 'Text'
+    const trackId = asString(t.id) || newId()
+    if (type === 'video' && asNumber(t.flag, 0) === 0) mainTrackIds.add(trackId)
     tracks.push({
-      id: asString(t.id) || newId(),
+      id: trackId,
       type,
       name: asString(t.name) || `${label} ${counts[type]}`,
       segments,
@@ -316,6 +386,9 @@ export function importCapCutDraft(json: unknown): ImportResult {
   // CapCut lists audio tracks last. Here array order is render order and the
   // timeline shows it top-down, so audio moves to the front to sit at the bottom.
   tracks.sort((x, y) => Number(y.type === 'audio') - Number(x.type === 'audio'))
+
+  const firstVideo = tracks.find((t) => t.type === 'video')
+  const firstVideoIsMain = firstVideo !== undefined && mainTrackIds.has(firstVideo.id)
 
   const used = new Set(tracks.flatMap((t) => t.segments.map((s) => s.material_id)))
   const keep = <T extends { id: string }>(pool: Map<string, T>) =>
@@ -335,13 +408,30 @@ export function importCapCutDraft(json: unknown): ImportResult {
   if (rotated) {
     warnings.push(`${rotated} clip${rotated === 1 ? '' : 's'} with a rotated crop imported with an upright crop`)
   }
+  const textCount = [...texts.keys()].filter((id) => used.has(id)).length
+  if (textCount) {
+    warnings.push(
+      `${textCount} text clip${textCount === 1 ? '' : 's'} shown in the default font (CapCut fonts cannot be loaded)`,
+    )
+  }
+  const mixed = [...mixedTexts].filter((id) => used.has(id)).length
+  if (mixed) {
+    warnings.push(`${mixed} text clip${mixed === 1 ? '' : 's'} with mixed styles imported with one style`)
+  }
+  if (reversed) {
+    warnings.push(
+      `${reversed} reversed clip${reversed === 1 ? '' : 's'} imported; check that the right part of the source plays`,
+    )
+  }
+  if (imageBackgrounds) {
+    warnings.push(
+      `${imageBackgrounds} clip${imageBackgrounds === 1 ? '' : 's'} with an image background imported without it`,
+    )
+  }
   if (replacedTransitions) {
     warnings.push(
       `${replacedTransitions} transition${replacedTransitions === 1 ? '' : 's'} replaced with a Mix (cross-dissolve) of the same length`,
     )
-  }
-  if (eased) {
-    warnings.push(`${eased} clip${eased === 1 ? '' : 's'} with eased keyframes imported with linear motion`)
   }
   if (dropped) warnings.push(`${dropped} segment${dropped === 1 ? '' : 's'} could not be read and were skipped`)
 
@@ -351,6 +441,15 @@ export function importCapCutDraft(json: unknown): ImportResult {
     name: asString(json.name) || 'Imported draft',
     fps,
     duration: Math.max(0, ...tracks.flatMap((t) => t.segments.map(segmentEnd))),
+    // The magnet keeps the first video track packed, which is only right if
+    // that track is the one CapCut treats as the main track (flag 0).
+    config: {
+      maintrack_adsorb:
+        isObject(json.config) && json.config.maintrack_adsorb === true && firstVideoIsMain,
+      // CapCut's export_range is null in every draft seen, so its shape is
+      // unknown and it is not read.
+      export_range: null,
+    },
     canvas_config: {
       width: asNumber(canvasIn.width, 0) || 1920,
       height: asNumber(canvasIn.height, 0) || 1080,
@@ -382,12 +481,26 @@ export function openProject(text: string): ImportResult {
     for (const track of draft.tracks) {
       for (const segment of track.segments) {
         segment.common_keyframes ??= []
+        for (const list of segment.common_keyframes) {
+          for (const keyframe of list.keyframe_list) {
+            keyframe.left_control ??= { x: 0, y: 0 }
+            keyframe.right_control ??= { x: 0, y: 0 }
+          }
+        }
         segment.audio_fade ??= null
         segment.transition ??= null
+        segment.canvas ??= null
+        segment.reverse ??= false
+        segment.freeze ??= false
+        segment.group_id ??= ''
         if (segment.clip) segment.clip.flip ??= { horizontal: false, vertical: false }
       }
     }
+    draft.config ??= { maintrack_adsorb: false, export_range: null }
+    draft.config.export_range ??= null
+    for (const material of draft.materials.audios) material.name ??= material.path
     for (const material of draft.materials.videos) material.crop ??= { ...FULL_CROP }
+    draft.materials.texts = draft.materials.texts.map((m) => ({ ...DEFAULT_TEXT_STYLE, ...m }))
     return { draft, warnings: [] }
   }
   throw new Error('Unrecognised project file')

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { importCapCutDraft, openProject } from './capcutImport'
 import { cropInsets, isCropped } from './crop'
-import { evalProperty } from './keyframes'
+import { easingAt, evalProperty } from './keyframes'
+import { addText } from './ops'
+import { DEFAULT_TEXT_STYLE } from './textStyle'
+import { emptyDraft } from './types'
 
 // Hand-written in the shape of a real draft_content.json (CapCut 9.4), reduced
 // to the fields the importer reads plus the kinds of things it must skip.
@@ -12,6 +15,7 @@ const fixture = {
   duration: 3_000_000,
   fps: 30.0,
   canvas_config: { ratio: 'original', width: 1080, height: 1920, background: null },
+  config: { video_mute: false, maintrack_adsorb: true },
   tracks: [
     {
       id: 'T1',
@@ -32,7 +36,7 @@ const fixture = {
             alpha: 0.8,
           },
           material_id: 'V1',
-          extra_material_refs: ['SP1', 'AN1', 'TR1'],
+          extra_material_refs: ['SP1', 'AN1', 'TR1', 'CV1'],
           visible: true,
           common_keyframes: [
             {
@@ -45,17 +49,18 @@ const fixture = {
                   curveType: 'FreeCurveInOut',
                   graphID: '',
                   left_control: { x: 0, y: 0 },
-                  right_control: { x: 166829, y: 0 },
+                  right_control: { x: 0, y: 0 },
                   string_value: '',
                   time_offset: 1500000,
                   values: [1],
                 },
                 {
                   id: 'F1',
-                  curveType: 'Line',
+                  curveType: 'FreeCurveInOut',
                   graphID: '',
                   left_control: { x: 0, y: 0 },
-                  right_control: { x: 0, y: 0 },
+                  // 0.42 of the 1 s to the next keyframe: CapCut's Ease In.
+                  right_control: { x: 420000, y: 0 },
                   string_value: '',
                   time_offset: 500000,
                   values: [0.2],
@@ -78,7 +83,7 @@ const fixture = {
           volume: 1.0,
           clip: null,
           material_id: 'V1',
-          extra_material_refs: ['SP2', 'AN0'],
+          extra_material_refs: ['SP2', 'AN0', 'CV2'],
           visible: true,
           common_keyframes: [],
         },
@@ -157,6 +162,7 @@ const fixture = {
       {
         id: 'A1',
         type: 'extract_music',
+        name: 'Extracted20250625-1',
         duration: 12666666,
         path: 'C:\\Users\\someone\\Downloads\\song.mp3',
       },
@@ -182,6 +188,25 @@ const fixture = {
         }),
         font_size: 15,
         text_color: '#ffffff',
+        alignment: 0,
+        letter_spacing: 0,
+        line_spacing: 0.02,
+        border_color: '#FFFFFFFF',
+        border_width: 0.059999998658895,
+        border_alpha: 1,
+        has_shadow: true,
+        shadow_color: '#000000',
+        shadow_alpha: 0.8,
+        shadow_smoothing: 0.45,
+        shadow_distance: 5,
+        shadow_angle: -45,
+        background_color: '',
+        background_alpha: 1,
+        background_round_radius: 0,
+        bold_width: 0,
+        italic_degree: 0,
+        underline: true,
+        font_path: 'C:/cache/effect/7311977840574992897/ZY Classical.ttf',
       },
     ],
     speeds: [
@@ -209,6 +234,12 @@ const fixture = {
       },
     ],
     video_effects: [{ id: 'E1', type: 'video_effect', name: 'Flash' }],
+    canvases: [
+      { id: 'CV1', type: 'canvas_color', color: '#112233FF', blur: 0, image: '', album_image: '' },
+      { id: 'CV2', type: 'canvas_blur', color: '', blur: 0.375, image: '', album_image: '' },
+      // The default every clip carries: no background.
+      { id: 'CV0', type: 'canvas_color', color: '', blur: 0, image: '', album_image: '' },
+    ],
     transitions: [
       {
         id: 'TR1',
@@ -263,6 +294,7 @@ describe('importCapCutDraft', () => {
   it('relinks media by file name only', () => {
     expect(draft.materials.videos.map((m) => m.path)).toEqual(['My Clip.mp4'])
     expect(draft.materials.audios.map((m) => m.path)).toEqual(['song.mp3'])
+    expect(draft.materials.audios[0].name).toBe('Extracted20250625-1')
   })
 
   it('unpacks rich text', () => {
@@ -286,8 +318,8 @@ describe('importCapCutDraft', () => {
       '1 filter track not imported',
       '1 clip with a speed ramp imported at average speed',
       '1 clip uses in/out animations, which were not imported',
+      '1 text clip shown in the default font (CapCut fonts cannot be loaded)',
       '1 transition replaced with a Mix (cross-dissolve) of the same length',
-      '1 clip with eased keyframes imported with linear motion',
     ])
   })
 
@@ -301,7 +333,45 @@ describe('importCapCutDraft', () => {
     ])
     // The segment plays source 0.5 s - 1.5 s over timeline 0 - 1 s.
     expect(evalProperty(s, 'KFTypeAlpha', 0)).toBeCloseTo(0.2)
-    expect(evalProperty(s, 'KFTypeAlpha', 500000)).toBeCloseTo(0.6)
+    // Halfway through an Ease In the value has covered about 31.5% of the change.
+    expect(evalProperty(s, 'KFTypeAlpha', 500000)).toBeCloseTo(0.2 + 0.8 * 0.3154, 3)
+    expect(easingAt(s, 0, 30)).toBe('Ease in')
+  })
+
+  it('imports text styling from the text material', () => {
+    expect(draft.materials.texts[0]).toMatchObject({
+      alignment: 0,
+      border_color: '#ffffff',
+      border_width: 0.059999998658895,
+      has_shadow: true,
+      shadow_color: '#000000',
+      shadow_alpha: 0.8,
+      background_color: '',
+      underline: true,
+      bold: false,
+      italic: false,
+      font_family: DEFAULT_TEXT_STYLE.font_family,
+    })
+  })
+
+  it('gives new text the default style', () => {
+    const { draft: fresh } = addText(emptyDraft(), 'Hi', 0)
+    expect(fresh.materials.texts[0]).toMatchObject(DEFAULT_TEXT_STYLE)
+  })
+
+  it('imports a canvas background from the canvases material', () => {
+    const [first, second] = draft.tracks[1].segments
+    expect(first.canvas).toEqual({ type: 'canvas_color', color: '#112233' })
+    expect(second.canvas).toEqual({ type: 'canvas_blur', blur: 0.375 })
+    expect(draft.tracks[0].segments[0].canvas).toBeNull()
+  })
+
+  it('carries the main-track magnet setting across', () => {
+    expect(draft.config.maintrack_adsorb).toBe(true)
+    // Without a flag-0 video track there is no main track to keep packed.
+    const overlayOnly = structuredClone(fixture)
+    for (const track of overlayOnly.tracks) track.flag = 2
+    expect(importCapCutDraft(overlayOnly).draft.config.maintrack_adsorb).toBe(false)
   })
 
   it('imports a transition onto the outgoing clip', () => {
@@ -331,17 +401,32 @@ describe('importCapCutDraft', () => {
         delete seg.common_keyframes
         delete seg.audio_fade
         delete seg.transition
+        delete seg.canvas
+        delete seg.reverse
+        delete seg.group_id
+        delete seg.freeze
         if (seg.clip) delete seg.clip.flip
       }
     }
+    delete old.config
     for (const material of old.materials.videos) delete material.crop
+    for (const material of old.materials.audios) delete material.name
+    for (const text of old.materials.texts) {
+      for (const key of Object.keys(DEFAULT_TEXT_STYLE)) delete text[key]
+    }
     const reopened = openProject(JSON.stringify(old)).draft
     const segments = reopened.tracks.flatMap((t) => t.segments)
     expect(segments.every((x) => Array.isArray(x.common_keyframes))).toBe(true)
     expect(segments.every((x) => x.audio_fade === null)).toBe(true)
     expect(segments.every((x) => x.transition === null)).toBe(true)
+    expect(segments.every((x) => x.canvas === null)).toBe(true)
+    expect(reopened.config).toEqual({ maintrack_adsorb: false, export_range: null })
+    expect(segments.every((x) => x.group_id === '')).toBe(true)
+    expect(reopened.materials.audios[0].name).toBe('song.mp3')
+    expect(segments.every((x) => x.reverse === false && x.freeze === false)).toBe(true)
     expect(segments.every((x) => !x.clip || x.clip.flip.horizontal === false)).toBe(true)
     expect(reopened.materials.videos.every((m) => !isCropped(m.crop))).toBe(true)
+    expect(reopened.materials.texts[0]).toMatchObject({ ...DEFAULT_TEXT_STYLE, content: 'GAS' })
   })
 
   it('rejects files that are not drafts', () => {

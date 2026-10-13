@@ -6,6 +6,7 @@ import { emptyDraft, newId, type AudioMaterial, type Draft } from './types'
 const audio = (seconds: number): AudioMaterial => ({
   id: newId(),
   type: 'audio',
+  name: 'song.mp3',
   path: 'song.mp3',
   duration: seconds * 1_000_000,
 })

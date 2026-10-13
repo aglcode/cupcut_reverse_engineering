@@ -10,10 +10,22 @@ import type { ResolvedFrame, VisualLayer } from './resolve'
 const DRIFT_PLAYING = 0.3
 const DRIFT_PAUSED = 0.01
 
-type Wanted = { path: string; sourceUs: number; speed: number; volume: number }
+type Wanted = {
+  path: string
+  sourceUs: number
+  speed: number
+  volume: number
+  // Media elements cannot play backwards or stand still on a frame while
+  // "playing", so reversed and frozen clips are shown by seeking every tick.
+  seekOnly: boolean
+}
 
 export class PreviewMedia {
   private elements = new Map<string, HTMLMediaElement>()
+  // Last frame shown for clips that are driven by seeking. A video element has
+  // no picture while a seek is in flight, which would flash black many times a
+  // second during reversed playback.
+  private held = new Map<string, OffscreenCanvas>()
 
   sync(frame: ResolvedFrame, assets: Assets, playing: boolean) {
     const wanted = new Map<string, Wanted>()
@@ -24,6 +36,7 @@ export class PreviewMedia {
         sourceUs: layer.sourceUs,
         speed: layer.segment.speed,
         volume: 0,
+        seekOnly: layer.segment.reverse || layer.segment.freeze,
       })
     }
     for (const layer of frame.audio) {
@@ -31,7 +44,9 @@ export class PreviewMedia {
         path: layer.path,
         sourceUs: layer.sourceUs,
         speed: layer.segment.speed,
-        volume: layer.volume,
+        // Reversed sound cannot be previewed this way; it is in the export.
+        volume: layer.segment.reverse ? 0 : layer.volume,
+        seekOnly: layer.segment.reverse,
       })
     }
 
@@ -57,7 +72,7 @@ export class PreviewMedia {
       el.playbackRate = Math.min(16, Math.max(0.0625, want.speed))
       el.volume = Math.min(1, Math.max(0, want.volume))
       el.muted = want.volume <= 0
-      if (playing) {
+      if (playing && !want.seekOnly) {
         if (el.paused) {
           el.currentTime = time
           void el.play().catch(() => {})
@@ -75,11 +90,25 @@ export class PreviewMedia {
     const asset = assets[assetKey(layer.material.path)]
     if (!asset) return null
     if (asset.image) return { image: asset.image, width: asset.width, height: asset.height }
-    const el = this.elements.get(layer.segment.id)
-    if (!(el instanceof HTMLVideoElement) || el.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      return null
+    const { id, reverse, freeze } = layer.segment
+    const el = this.elements.get(id)
+    const ready =
+      el instanceof HTMLVideoElement &&
+      el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      el.videoWidth > 0
+    if (!(reverse || freeze)) {
+      this.held.delete(id)
+      return ready ? { image: el, width: el.videoWidth, height: el.videoHeight } : null
     }
-    return { image: el, width: el.videoWidth, height: el.videoHeight }
+    let copy = this.held.get(id)
+    if (ready && !el.seeking) {
+      if (!copy || copy.width !== el.videoWidth || copy.height !== el.videoHeight) {
+        copy = new OffscreenCanvas(el.videoWidth, el.videoHeight)
+        this.held.set(id, copy)
+      }
+      copy.getContext('2d')?.drawImage(el, 0, 0)
+    }
+    return copy ? { image: copy, width: copy.width, height: copy.height } : null
   }
 
   // Drops elements for segments that no longer exist.
@@ -90,6 +119,7 @@ export class PreviewMedia {
       el.removeAttribute('src')
       el.load()
       this.elements.delete(id)
+      this.held.delete(id)
     }
   }
 

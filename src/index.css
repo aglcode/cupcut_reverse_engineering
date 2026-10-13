@@ -310,6 +310,8 @@ input[type='color'] {
 }
 
 .timeline {
+  /* Dragging here moves clips or draws a selection box; it never selects text. */
+  user-select: none;
   flex: 0 0 38%;
   min-height: 180px;
   display: grid;
@@ -373,6 +375,9 @@ input[type='color'] {
   align-items: center;
   justify-content: space-between;
   flex: 0 0 112px;
+  /* Fixed, whatever the name is: lanes must line up with the ruler. */
+  width: 112px;
+  min-width: 0;
   padding: 0 4px 0 10px;
   background: var(--panel);
   border-right: 1px solid var(--border);
@@ -380,6 +385,8 @@ input[type='color'] {
 }
 
 .track-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -460,6 +467,10 @@ input[type='color'] {
   flex: 1;
   min-width: 0;
   padding: 0 8px;
+  /* Keeps the name readable over thumbnails and waveforms. */
+  text-shadow:
+    0 0 3px rgb(0 0 0 / 0.95),
+    0 0 6px rgb(0 0 0 / 0.8);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -550,7 +561,7 @@ input[type='color'] {
   background: #fff;
   border: 1px solid rgb(0 0 0 / 0.6);
   transform: rotate(45deg);
-  cursor: pointer;
+  cursor: ew-resize;
 }
 
 /* Shaded wedge over the part of a clip that is fading. */
@@ -580,8 +591,12 @@ input[type='color'] {
 }
 
 .checks > span {
-  grid-row: span 2;
+  grid-row: 1;
   color: var(--muted);
+}
+
+.checks > label {
+  grid-column: 2;
 }
 
 .checks label {
@@ -604,4 +619,73 @@ input[type='color'] {
   );
   border-left: 1px solid rgb(255 255 255 / 0.7);
   pointer-events: none;
+}
+
+/* Thumbnails or waveform, behind everything else in the clip. */
+.clip-visual {
+  position: absolute;
+  top: 0;
+  pointer-events: none;
+}
+
+.clip-video .clip-visual {
+  opacity: 0.85;
+}
+
+/* Selection box drawn while dragging on empty timeline. */
+.marquee {
+  position: fixed;
+  z-index: 5;
+  border: 1px solid var(--accent);
+  background: rgb(63 184 201 / 0.15);
+  pointer-events: none;
+}
+
+button.toggle.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.main-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+/* A linked clip: a small bar along its top edge. */
+.clip.linked::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.range-buttons {
+  display: flex;
+  gap: 4px;
+  margin-left: 12px;
+}
+
+/* The stretch of the ruler that an export will cover. */
+.export-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-right: 2px solid var(--accent);
+  border-left: 2px solid var(--accent);
+  background: rgb(63 184 201 / 0.22);
+  pointer-events: none;
+}
+
+.range-choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }

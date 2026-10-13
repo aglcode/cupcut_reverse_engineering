@@ -2,6 +2,13 @@ import { useEffect, useRef } from 'react'
 import { drawFrame } from '../engine/compositor'
 import { PreviewMedia } from '../engine/previewMedia'
 import { resolveFrame } from '../engine/resolve'
+import {
+  clearExportRange,
+  hasExportRange,
+  markIn,
+  markOut,
+  markSegments,
+} from '../model/exportRange'
 import { formatTimecode } from '../model/time'
 import type { Draft } from '../model/types'
 import { useEditor } from '../state/store'
@@ -14,6 +21,42 @@ function Timecode() {
     <span className="timecode">
       {formatTimecode(playhead, fps)} / {formatTimecode(duration, fps)}
     </span>
+  )
+}
+
+// Marks the part of the timeline to export.
+function RangeButtons() {
+  const marked = useEditor((s) => hasExportRange(s.draft))
+  const hasSelection = useEditor((s) => s.selectedIds.length > 0)
+  const apply = (edit: (draft: Draft, playhead: number, selected: string[]) => Draft) => {
+    const { draft, playhead, selectedIds, commit } = useEditor.getState()
+    commit(edit(draft, playhead, selectedIds))
+  }
+  return (
+    <div className="range-buttons" role="group" aria-label="Export range">
+      <button type="button" title="Start the export range at the playhead (I)" onClick={() => apply(markIn)}>
+        Mark in
+      </button>
+      <button type="button" title="End the export range at the playhead (O)" onClick={() => apply(markOut)}>
+        Mark out
+      </button>
+      <button
+        type="button"
+        title="Set the export range to the selected clips"
+        disabled={!hasSelection}
+        onClick={() => apply((draft, _playhead, selected) => markSegments(draft, selected))}
+      >
+        Mark clips
+      </button>
+      <button
+        type="button"
+        title="Export the whole timeline again"
+        disabled={!marked}
+        onClick={() => apply(clearExportRange)}
+      >
+        Clear range
+      </button>
+    </div>
   )
 }
 
@@ -82,6 +125,7 @@ export function Preview() {
           {playing ? 'Pause' : 'Play'}
         </button>
         <Timecode />
+        <RangeButtons />
       </div>
     </section>
   )

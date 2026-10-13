@@ -3,6 +3,7 @@
 
 import { fadeGain } from '../model/fades'
 import { evalClip, evalVolume, isAnimated } from '../model/keyframes'
+import { sourceTimeAt } from '../model/timing'
 import {
   effectiveTransition,
   transitionFx,
@@ -42,11 +43,7 @@ export const isActive = (s: Segment, t: number): boolean =>
   s.target_timerange.start <= t && t < segmentEnd(s)
 
 // Position inside the source media for timeline time `t`.
-export function sourceTime(s: Segment, t: number): number {
-  const src = s.source_timerange
-  if (!src) return 0
-  return src.start + Math.round((t - s.target_timerange.start) * s.speed)
-}
+export const sourceTime = (s: Segment, t: number): number => Math.round(sourceTimeAt(s, t))
 
 // Source position of a video clip at `t`. During a transition a clip plays a
 // little before its in-point or after its out-point; where the media runs out
@@ -63,6 +60,8 @@ export function audibleSegments(draft: Draft): AudibleSegment[] {
   for (const track of draft.tracks) {
     if (track.type === 'text') continue
     for (const segment of track.segments) {
+      // A freeze frame is a still picture and has no sound.
+      if (segment.freeze) continue
       // A silent clip is skipped unless keyframes can raise its volume.
       if (segment.volume <= 0 && !isAnimated(segment, 'KFTypeVolume')) continue
       if (track.type === 'audio') {

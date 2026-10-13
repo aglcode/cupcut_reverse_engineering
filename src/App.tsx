@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { markIn, markOut } from './model/exportRange'
 import { frameDuration } from './model/time'
 import { useEditor } from './state/store'
 import { ExportDialog } from './ui/ExportDialog'
@@ -21,11 +22,16 @@ function onKeyDown(e: KeyboardEvent) {
   if (key === ' ' && e.target instanceof HTMLElement && e.target.closest('button, a')) return
 
   if (key === ' ') state.setPlaying(!state.playing)
+  else if ((key === 'delete' || key === 'backspace') && e.shiftKey) state.rippleDeleteSelected()
   else if (key === 'delete' || key === 'backspace') state.deleteSelected()
   else if (mod && key === 'z' && e.shiftKey) state.redo()
   else if (mod && key === 'z') state.undo()
   else if (mod && key === 'y') state.redo()
   else if (mod && key === 'b') state.splitAtPlayhead()
+  else if (mod && key === 'a') state.selectAll()
+  else if (key === 'escape') state.select(null)
+  else if (!mod && key === 'i') state.commit(markIn(state.draft, state.playhead))
+  else if (!mod && key === 'o') state.commit(markOut(state.draft, state.playhead))
   else if (key === 'arrowleft') state.setPlayhead(state.playhead - frame)
   else if (key === 'arrowright') state.setPlayhead(Math.min(state.draft.duration, state.playhead + frame))
   else return
@@ -47,6 +53,10 @@ export default function App() {
   const [exporting, setExporting] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
   const openRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    void useEditor.getState().restoreSession()
+  }, [])
 
   useEffect(() => {
     window.addEventListener('keydown', onKeyDown)
