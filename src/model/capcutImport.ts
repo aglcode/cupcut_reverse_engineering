@@ -3,21 +3,32 @@
 // silently dropped.
 
 import { cropRect, FULL_CROP, isAxisAligned, rectToCrop } from './crop'
+import { inOrder } from './animations'
+import { isMaskProperty } from './keyframes'
+import { MASK_TYPES } from './mask'
+import { cleanPoints } from './speedCurve'
 import { DEFAULT_TEXT_STYLE, normalizeColor } from './textStyle'
+import { fitSpeed } from './timing'
 import { frameDuration, snapToFrame } from './time'
 import {
   DEFAULT_CLIP,
+  DEFAULT_MASK_CONFIG,
   newId,
   segmentEnd,
+  type Adjust,
   type AudioFade,
   type AudioMaterial,
   type CanvasBackground,
   type Clip,
+  type ClipAnimation,
   type Crop,
   type Draft,
   type KeyframeList,
   type KeyframeProperty,
+  type MarkItem,
+  type Mask,
   type Segment,
+  type SpeedCurve,
   type TextMaterial,
   type Track,
   type TrackType,
@@ -161,6 +172,16 @@ const KEYFRAME_PROPERTIES: Record<TrackType, KeyframeProperty[]> = {
     'KFTypeRotation',
     'KFTypeAlpha',
     'KFTypeVolume',
+    'KFTypeBrightness',
+    'KFTypeContrast',
+    'KFTypeSaturation',
+    'KFTypeCommonMaskSizeWidth',
+    'KFTypeCommonMaskSizeHeight',
+    'KFTypeCommonMaskPositionX',
+    'KFTypeCommonMaskPositionY',
+    'KFTypeCommonMaskRotation',
+    'KFTypeCommonMaskFeather',
+    'KFTypeCommonMaskRoundCorner',
   ],
   text: ['KFTypePositionX', 'KFTypePositionY', 'KFTypeScaleX', 'KFTypeScaleY', 'KFTypeRotation', 'KFTypeAlpha'],
   audio: ['KFTypeVolume'],
@@ -193,15 +214,37 @@ function readKeyframes(v: unknown, type: TrackType): KeyframeList[] {
   return lists
 }
 
+// Reads mark_items from a time_marks material (or the draft's own time_marks).
+function readMarks(v: unknown): MarkItem[] {
+  if (!isObject(v)) return []
+  return asArray(v.mark_items)
+    .filter((m) => isObject(m.time_range))
+    .map((m) => ({
+      id: asString(m.id) || newId(),
+      color: normalizeColor(asString(m.color)) || '#00c1cd',
+      title: asString(m.title),
+      time_range: { start: asNumber((m.time_range as Json).start, 0), duration: 0 },
+    }))
+    .sort((a, b) => a.time_range.start - b.time_range.start)
+}
+
 // Features that live in a segment's extra_material_refs and are not rendered here.
+// materials.effects holds many kinds of thing. These three types are colour
+// adjustment, which is supported; the rest are reported by what they are.
+const ADJUST_TYPES = ['brightness', 'contrast', 'saturation'] as const
+const EFFECT_LABELS: Record<string, string> = {
+  filter: 'filters',
+  mix_mode: 'blend modes',
+  bloom: 'text glow',
+  text_effect: 'text effects',
+}
+const effectLabel = (type: string): string => EFFECT_LABELS[type] ?? `"${type}" effects`
+
 const UNSUPPORTED_REFS: Record<string, (m: Json) => boolean> = {
-  effects: () => true,
   video_effects: () => true,
   hsl: () => true,
-  common_mask: () => true,
   masks: () => true,
   audio_effects: () => true,
-  material_animations: (m) => asArray(m.animations).length > 0,
 }
 
 function readFade(m: Json): AudioFade | null {
@@ -213,13 +256,43 @@ function readFade(m: Json): AudioFade | null {
 }
 
 const REF_LABELS: Record<string, string> = {
-  effects: 'colour adjustments or filters',
   video_effects: 'video effects',
   hsl: 'HSL adjustments',
-  common_mask: 'masks',
+  common_mask: 'masks of a kind that is not supported',
   masks: 'masks',
   audio_effects: 'audio effects',
-  material_animations: 'in/out animations',
+  material_animations: 'loop or combo animations',
+}
+
+// A mask as CapCut stores it, or null for a kind of mask not drawn here.
+function readMask(m: Json): Mask | null {
+  const kind = MASK_TYPES.find((k) => k.type === m.resource_type)
+  if (!kind) return null
+  const c = isObject(m.config) ? m.config : {}
+  const d = DEFAULT_MASK_CONFIG
+  return {
+    name: asString(m.name) || kind.name,
+    resource_type: kind.type,
+    config: {
+      width: Math.max(0.001, asNumber(c.width, d.width)),
+      height: Math.max(0.001, asNumber(c.height, d.height)),
+      centerX: asNumber(c.centerX, 0),
+      centerY: asNumber(c.centerY, 0),
+      rotation: asNumber(c.rotation, 0),
+      feather: Math.min(1, Math.max(0, asNumber(c.feather, 0))),
+      roundCorner: Math.min(1, Math.max(0, asNumber(c.roundCorner, 0))),
+      invert: c.invert === true,
+    },
+  }
+}
+
+// A speed ramp as CapCut stores it on the clip's speed material.
+function readCurve(raw: Record<string, unknown>): SpeedCurve | null {
+  if (!Array.isArray(raw.speed_points)) return null
+  const points = cleanPoints(
+    raw.speed_points.filter(isObject).map((p) => ({ x: asNumber(p.x, NaN), y: asNumber(p.y, NaN) })),
+  )
+  return points && { name: asString(raw.name) || 'Custom', speed_points: points }
 }
 
 export function importCapCutDraft(json: unknown): ImportResult {
@@ -271,8 +344,8 @@ export function importCapCutDraft(json: unknown): ImportResult {
   const pools: Record<TrackType, Map<string, { id: string }>> = { video: videos, audio: audios, text: texts }
   const skippedTracks = new Map<string, number>()
   const unsupportedRefs = new Map<string, number>()
-  let curveSpeed = 0
   let replacedTransitions = 0
+  let replacedAnimations = 0
   let imageBackgrounds = 0
   let reversed = 0
   let dropped = 0
@@ -305,17 +378,42 @@ export function importCapCutDraft(json: unknown): ImportResult {
       }
 
       const refs = Array.isArray(s.extra_material_refs) ? s.extra_material_refs : []
-      let isCurve = false
+      let curve: SpeedCurve | null = null
+      let mask: Mask | null = null
+      const animations: ClipAnimation[] = []
       let fade: AudioFade | null = null
       let transition: Transition | null = null
       let canvas: CanvasBackground | null = null
+      let marks: MarkItem[] = []
+      const adjust: Adjust = { brightness: 0, contrast: 0, saturation: 0 }
       const seen = new Set<string>()
       for (const ref of refs) {
         const hit = refIndex.get(asString(ref))
         if (!hit) continue
         const [kind, m] = hit
-        if (kind === 'speeds' && (m.mode === 1 || isObject(m.curve_speed))) isCurve = true
+        if (kind === 'speeds' && isObject(m.curve_speed)) curve = readCurve(m.curve_speed)
+        if (kind === 'common_mask' && type === 'video' && s.enable_video_mask !== false) {
+          mask = readMask(m)
+          if (!mask) seen.add(kind)
+        }
+        if (kind === 'material_animations' && type !== 'audio') {
+          for (const a of asArray(m.animations)) {
+            if (a.type !== 'in' && a.type !== 'out') {
+              seen.add(kind)
+              continue
+            }
+            if (animations.some((x) => x.type === a.type)) continue
+            // Only CapCut's fades have an equivalent here; any other look
+            // becomes a fade of the same length.
+            const name = a.type === 'in' ? 'Fade In' : 'Fade Out'
+            if (a.name !== name) replacedAnimations++
+            const length = Math.max(0, asNumber(a.duration, 0))
+            if (length > 0) animations.push({ type: a.type, name, duration: length })
+          }
+        }
         if (kind === 'audio_fades') fade = readFade(m)
+        // Clip markers are in the clip's source time, which is how they are kept here too.
+        if (kind === 'time_marks') marks = readMarks(m)
         if (kind === 'canvases' && type === 'video') {
           // No local draft sets a background, so this follows the field names
           // alone; the scale of the blur value in CapCut is not known.
@@ -335,16 +433,32 @@ export function importCapCutDraft(json: unknown): ImportResult {
           if (m.name !== 'Mix') replacedTransitions++
           transition = { name: 'Mix', duration: Math.max(0, asNumber(m.duration, 0)) }
         }
+        if (kind === 'effects') {
+          const adjustType = ADJUST_TYPES.find((a) => a === m.type)
+          // enable_adjust false means the values are set but switched off.
+          if (adjustType && type === 'video') {
+            if (s.enable_adjust !== false) {
+              adjust[adjustType] = Math.min(1, Math.max(-1, asNumber(m.value, 0)))
+            }
+          } else {
+            seen.add(`effects:${asString(m.type)}`)
+          }
+        }
         if (UNSUPPORTED_REFS[kind]?.(m)) seen.add(kind)
       }
       for (const kind of seen) unsupportedRefs.set(kind, (unsupportedRefs.get(kind) ?? 0) + 1)
-      if (isCurve) curveSpeed++
       if (type === 'video' && s.reverse === true) reversed++
-      const keyframes = readKeyframes(s.common_keyframes, type)
+      // Mask keyframes mean nothing without the mask they animate.
+      const keyframes = readKeyframes(s.common_keyframes, type).filter(
+        (k) => mask !== null || !isMaskProperty(k.property_type),
+      )
 
       const speed = asNumber(s.speed, 1) || 1
       const source = timeRange(s.source_timerange)
-      segments.push({
+      // A ramp needs the source range it was drawn over, so it is dropped
+      // where the draft has none.
+      const ramp = type === 'text' || !source ? null : curve
+      const segment: Segment = {
         id: asString(s.id) || newId(),
         material_id: materialId,
         source_timerange:
@@ -352,12 +466,11 @@ export function importCapCutDraft(json: unknown): ImportResult {
             ? null
             : {
                 start: source?.start ?? 0,
-                // A speed ramp plays its source at a varying rate; `speed` is
-                // only the average, so the range is rebuilt to stay consistent.
-                duration: isCurve || !source ? Math.round(duration * speed) : source.duration,
+                duration: source ? source.duration : Math.round(duration * speed),
               },
         target_timerange: { start, duration },
         speed: type === 'text' ? 1 : speed,
+        curve_speed: ramp,
         volume: asNumber(s.volume, 1),
         clip: type === 'audio' ? null : readClip(s.clip),
         visible: s.visible !== false,
@@ -368,7 +481,16 @@ export function importCapCutDraft(json: unknown): ImportResult {
         reverse: type === 'video' && s.reverse === true,
         freeze: false,
         group_id: asString(s.group_id),
-      })
+        // Text has no source, so its markers would mean something else; none seen.
+        time_marks: type === 'text' ? [] : marks,
+        adjust,
+        mask,
+        animations: inOrder(animations),
+      }
+      // CapCut's stored speed for a ramped clip is sometimes the ramp's own
+      // average and sometimes source over timeline length; the two differ by
+      // the rounding of the clip to whole frames. The second is what plays.
+      segments.push(fitSpeed(segment))
     }
     segments.sort((a, b) => a.target_timerange.start - b.target_timerange.start)
     counts[type]++
@@ -398,11 +520,9 @@ export function importCapCutDraft(json: unknown): ImportResult {
   for (const [type, n] of skippedTracks) {
     warnings.push(`${n} ${type || 'unknown'} track${n === 1 ? '' : 's'} not imported`)
   }
-  if (curveSpeed) {
-    warnings.push(`${curveSpeed} clip${curveSpeed === 1 ? '' : 's'} with a speed ramp imported at average speed`)
-  }
   for (const [kind, n] of unsupportedRefs) {
-    warnings.push(`${n} ${n === 1 ? 'clip uses' : 'clips use'} ${REF_LABELS[kind]}, which were not imported`)
+    const label = kind.startsWith('effects:') ? effectLabel(kind.slice(8)) : REF_LABELS[kind]
+    warnings.push(`${n} ${n === 1 ? 'clip uses' : 'clips use'} ${label}, which were not imported`)
   }
   const rotated = [...rotatedCrops].filter((id) => used.has(id)).length
   if (rotated) {
@@ -433,6 +553,11 @@ export function importCapCutDraft(json: unknown): ImportResult {
       `${replacedTransitions} transition${replacedTransitions === 1 ? '' : 's'} replaced with a Mix (cross-dissolve) of the same length`,
     )
   }
+  if (replacedAnimations) {
+    warnings.push(
+      `${replacedAnimations} animation${replacedAnimations === 1 ? '' : 's'} replaced with a fade of the same length`,
+    )
+  }
   if (dropped) warnings.push(`${dropped} segment${dropped === 1 ? '' : 's'} could not be read and were skipped`)
 
   const draft: Draft = {
@@ -455,6 +580,8 @@ export function importCapCutDraft(json: unknown): ImportResult {
       height: asNumber(canvasIn.height, 0) || 1080,
     },
     tracks: tracks.length ? tracks : [{ id: newId(), type: 'video', name: 'Video 1', segments: [] }],
+    // Null in every draft seen; read on the assumption it has the same shape.
+    time_marks: readMarks(json.time_marks),
     materials: { videos: keep(videos), audios: keep(audios), texts: keep(texts) },
   }
   return { draft, warnings }
@@ -493,11 +620,17 @@ export function openProject(text: string): ImportResult {
         segment.reverse ??= false
         segment.freeze ??= false
         segment.group_id ??= ''
+        segment.time_marks ??= []
+        segment.curve_speed ??= null
+        segment.mask ??= null
+        segment.animations ??= []
+        segment.adjust ??= { brightness: 0, contrast: 0, saturation: 0 }
         if (segment.clip) segment.clip.flip ??= { horizontal: false, vertical: false }
       }
     }
     draft.config ??= { maintrack_adsorb: false, export_range: null }
     draft.config.export_range ??= null
+    draft.time_marks ??= []
     for (const material of draft.materials.audios) material.name ??= material.path
     for (const material of draft.materials.videos) material.crop ??= { ...FULL_CROP }
     draft.materials.texts = draft.materials.texts.map((m) => ({ ...DEFAULT_TEXT_STYLE, ...m }))

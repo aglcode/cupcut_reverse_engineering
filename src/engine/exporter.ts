@@ -12,16 +12,20 @@ import {
   getFirstEncodableAudioCodec,
   Mp4OutputFormat,
   Output,
+  StreamTarget,
   type Input,
+  type StreamTargetChunk,
   type VideoCodec,
   type WrappedCanvas,
 } from 'mediabunny'
 import { frameCount, frameToUs } from '../model/time'
 import type { Draft, TimeRange } from '../model/types'
+import { segmentEnd } from '../model/types'
 import { EXPORT_SAMPLE_RATE, mixAudio } from './audioMix'
+import { AudioSources } from './audioSources'
 import { drawFrame, type FrameImage } from './compositor'
 import { assetKey, missingMedia, openInput, type Assets } from './media'
-import { mediaSourceTime, resolveFrame, type MediaLayer } from './resolve'
+import { audibleSegments, mediaSourceTime, resolveFrame, type MediaLayer } from './resolve'
 
 export type ExportSettings = {
   width: number
@@ -33,6 +37,9 @@ export type ExportSettings = {
   codec?: ExportCodec
   // The stretch of the timeline to export. Defaults to all of it.
   range?: TimeRange
+  // Where to write the file as it is encoded (see exportFile.ts). Without it
+  // the whole file is built in memory and returned as a blob.
+  writable?: WritableStream
 }
 
 // The video formats an MP4 can carry that browsers may be able to encode.
@@ -58,7 +65,16 @@ export async function availableCodecs(width: number, height: number): Promise<Ex
   return found
 }
 
-export type ExportResult = { blob: Blob; videoCodec: string; audioCodec: string | null }
+// `blob` is null when the export was written to `settings.writable` instead.
+export type ExportResult = { blob: Blob | null; videoCodec: string; audioCodec: string | null }
+
+// Sound is mixed and handed to the encoder this much at a time, so the mix
+// for a long project is never held all at once.
+const AUDIO_CHUNK = 10_000_000
+// Each chunk after the first is mixed from a little before its start, and
+// that lead-in thrown away. It lets resampling settle, so chunks join without
+// a click.
+const AUDIO_LEAD_IN = 100_000
 
 // Roughly 0.12 bits per pixel per frame for H.264, about 7.5 Mbps at 1080p30;
 // the newer codecs reach similar quality with less.
@@ -72,7 +88,12 @@ export function recommendedBitrate(
   return Math.max(100_000, Math.round((width * height * fps * 0.12 * factor) / 100_000) * 100_000)
 }
 
-type Reader = { input: Input; frames: AsyncGenerator<WrappedCanvas | null, void, unknown> }
+type Reader = {
+  input: Input
+  frames: AsyncGenerator<WrappedCanvas | null, void, unknown>
+  // Timeline time after which the clip is no longer on screen.
+  until: number
+}
 
 // One decoder per video segment, walking its source frames in order. The clip
 // is read over its whole on-screen span, which transitions extend past its
@@ -100,7 +121,7 @@ async function openReader(
       if (t >= span.from) yield mediaSourceTime(segment, material, t) / 1_000_000
     }
   }
-  return { input, frames: sink.canvasesAtTimestamps(timestamps()) }
+  return { input, frames: sink.canvasesAtTimestamps(timestamps()), until: span.to }
 }
 
 export async function exportDraft(
@@ -121,7 +142,16 @@ export async function exportDraft(
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Could not create a drawing surface')
 
-  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() })
+  // Written straight to disk when there is somewhere to write to. The file's
+  // index then goes at the end, since putting it first would mean holding
+  // everything back until the end to know its size.
+  const memory = settings.writable ? null : new BufferTarget()
+  const output = new Output({
+    format: new Mp4OutputFormat(settings.writable ? { fastStart: false } : {}),
+    target:
+      memory ??
+      new StreamTarget(settings.writable as WritableStream<StreamTargetChunk>, { chunked: true }),
+  })
   const videoCodec: ExportCodec = settings.codec ?? 'avc'
   const label = CODECS.find((c) => c.codec === videoCodec)?.label ?? videoCodec
   if (!(await canEncodeVideo(videoCodec as VideoCodec, { width, height }).catch(() => false))) {
@@ -130,10 +160,13 @@ export async function exportDraft(
   const video = new CanvasSource(canvas, { codec: videoCodec, bitrate: settings.videoBitrate })
   output.addVideoTrack(video, { frameRate: fps })
 
-  const mix = await mixAudio(draft, assets, range)
+  const rangeEnd = range.start + range.duration
+  const hasSound = audibleSegments(draft).some(
+    ({ segment }) => segment.target_timerange.start < rangeEnd && segmentEnd(segment) > range.start,
+  )
   let audio: AudioBufferSource | null = null
   let audioCodec: string | null = null
-  if (mix) {
+  if (hasSound) {
     const codec = await getFirstEncodableAudioCodec(output.format.getSupportedAudioCodecs(), {
       numberOfChannels: 2,
       sampleRate: EXPORT_SAMPLE_RATE,
@@ -145,16 +178,58 @@ export async function exportDraft(
   }
 
   const readers = new Map<string, Reader>()
+  const sources = new AudioSources(assets)
+  // Timeline time up to which sound has been mixed and queued.
+  let mixedUntil = range.start
+  // Chunks are handed to the encoder one after another without waiting here:
+  // the muxer interleaves the tracks, so an audio chunk is only accepted once
+  // video has caught up with it.
+  let queued: Promise<void> = Promise.resolve()
+
+  const mixNextChunk = async (track: AudioBufferSource) => {
+    const from = mixedUntil
+    const to = Math.min(rangeEnd, from + AUDIO_CHUNK)
+    const lead = from > range.start ? AUDIO_LEAD_IN : 0
+    const mixed = await mixAudio(
+      draft,
+      assets,
+      { start: from - lead, duration: to - from + lead },
+      sources,
+    )
+    const frames = Math.max(1, Math.round(((to - from) / 1_000_000) * EXPORT_SAMPLE_RATE))
+    // Silence where nothing is playing, so the audio track has no holes.
+    const chunk = new AudioBuffer({
+      length: frames,
+      numberOfChannels: 2,
+      sampleRate: EXPORT_SAMPLE_RATE,
+    })
+    if (mixed) {
+      const skip = Math.round((lead / 1_000_000) * EXPORT_SAMPLE_RATE)
+      for (let c = 0; c < 2; c++) {
+        chunk.copyToChannel(mixed.getChannelData(c).subarray(skip, skip + frames), c)
+      }
+    }
+    mixedUntil = to
+    queued = queued.then(() => track.add(chunk))
+    queued.catch(() => {})
+  }
+
+  const closeReader = async (id: string, reader: Reader) => {
+    readers.delete(id)
+    await reader.frames.return().catch(() => {})
+    reader.input.dispose()
+  }
+
   try {
     await output.start()
-    // Not awaited here: the muxer interleaves tracks, so the audio promise only
-    // settles once video has caught up.
-    const audioDone = audio && mix ? audio.add(mix) : Promise.resolve()
-    audioDone.catch(() => {})
 
     for (let frame = 0; frame < total; frame++) {
       signal.throwIfAborted()
-      const layers = resolveFrame(draft, range.start + frameToUs(frame, fps)).visual
+      const t = range.start + frameToUs(frame, fps)
+      // Sound for a stretch is queued before that stretch's first picture.
+      while (audio && mixedUntil < rangeEnd && t >= mixedUntil) await mixNextChunk(audio)
+
+      const layers = resolveFrame(draft, t).visual
       const images = new Map<string, FrameImage>()
 
       for (const layer of layers) {
@@ -180,21 +255,26 @@ export async function exportDraft(
       drawFrame(ctx, width, height, layers, (layer) => images.get(layer.segment.id) ?? null)
       await video.add(frame / fps, 1 / fps)
       onProgress((frame + 1) / total)
+
+      // A clip that has left the screen will not be needed again; its decoder
+      // is closed now, not at the end, so a long project with many clips does
+      // not keep every one of them open.
+      for (const [id, reader] of readers) {
+        if (reader.until <= t) await closeReader(id, reader)
+      }
     }
 
-    await audioDone
+    await queued
     await output.finalize()
   } catch (error) {
-    if (output.state === 'started') await output.cancel()
+    if (output.state === 'started') await output.cancel().catch(() => {})
     throw error
   } finally {
-    for (const reader of readers.values()) {
-      await reader.frames.return()
-      reader.input.dispose()
-    }
+    for (const [id, reader] of readers) await closeReader(id, reader)
+    sources.dispose()
   }
 
-  const buffer = output.target.buffer
-  if (!buffer) throw new Error('The encoder produced no output')
-  return { blob: new Blob([buffer], { type: 'video/mp4' }), videoCodec, audioCodec }
+  if (!memory) return { blob: null, videoCodec, audioCodec }
+  if (!memory.buffer) throw new Error('The encoder produced no output')
+  return { blob: new Blob([memory.buffer], { type: 'video/mp4' }), videoCodec, audioCodec }
 }

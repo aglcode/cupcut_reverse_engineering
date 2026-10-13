@@ -5,6 +5,12 @@ import {
   DEFAULT_BACKGROUND_COLOR,
   setBackground,
 } from '../model/background'
+import {
+  ANIMATIONS,
+  DEFAULT_ANIMATION_DURATION,
+  effectiveAnimations,
+  setAnimation,
+} from '../model/animations'
 import { cropInsets, isCropped, setCrop } from '../model/crop'
 import { effectiveFade, setFade } from '../model/fades'
 import { EASINGS, type EasingName } from '../model/easing'
@@ -19,6 +25,7 @@ import {
   setKeyframes,
   setValues,
 } from '../model/keyframes'
+import { MASK_TYPES, setMask, setMaskInvert } from '../model/mask'
 import {
   findMaterial,
   findSegment,
@@ -31,7 +38,9 @@ import {
   setCanvas,
   setReverse,
   setSpeed,
+  setSpeedCurve,
 } from '../model/ops'
+import { MAX_CURVE_SPEED, MIN_CURVE_SPEED, SPEED_PRESETS } from '../model/speedCurve'
 import { formatTimecode, snapToFrame, US_PER_SEC } from '../model/time'
 import {
   DEFAULT_TRANSITION_DURATION,
@@ -39,8 +48,9 @@ import {
   setTransition,
   TRANSITIONS,
 } from '../model/transitions'
-import type { Draft, KeyframeProperty, Segment, TransitionName } from '../model/types'
+import type { Draft, KeyframeProperty, MaskType, Segment, TransitionName } from '../model/types'
 import { useEditor } from '../state/store'
+import { SpeedCurveEditor } from './SpeedCurveEditor'
 import { TextStyleFields } from './TextStyleFields'
 
 const CANVAS_PRESETS = [
@@ -264,12 +274,20 @@ export function Inspector() {
     material !== null &&
     !segment.freeze &&
     (material.type === 'video' || material.type === 'audio')
+  // A ramp from elsewhere (an imported draft) may have a name of its own.
+  const rampName = !segment.curve_speed
+    ? ''
+    : SPEED_PRESETS.some((p) => p.name === segment.curve_speed?.name)
+      ? segment.curve_speed.name
+      : 'Custom'
   const isVideo = material !== null && material.type === 'video' && !segment.freeze
   const canExtract = isVideo && (segment.volume > 0 || isAnimated(segment, 'KFTypeVolume'))
   const extract = () => {
     const made = extractAudio(draft, segment.id)
     if (made) commit(made.draft)
   }
+  const maskType = segment.mask?.resource_type ?? null
+  const animations = effectiveAnimations(segment)
   const linkedCount = linkedIds(draft, segment.id).length
   const onKeyframe = segment.common_keyframes.some((k) =>
     hasKeyframeAt(segment, k.property_type, playhead, draft.fps),
@@ -335,15 +353,43 @@ export function Inspector() {
       )}
 
       {canRetime && (
-        <NumberField
-          label="Speed"
-          value={segment.speed}
-          step={0.1}
-          min={MIN_SPEED}
-          max={MAX_SPEED}
-          suffix="×"
-          onCommit={(v) => commit(setSpeed(draft, segment.id, v))}
-        />
+        <>
+          <NumberField
+            label={segment.curve_speed ? 'Average speed' : 'Speed'}
+            value={segment.speed}
+            step={0.1}
+            min={MIN_SPEED}
+            max={MAX_SPEED}
+            suffix="×"
+            onCommit={(v) => commit(setSpeed(draft, segment.id, v))}
+          />
+          <label className="field">
+            <span>Speed ramp</span>
+            <select
+              value={rampName}
+              onChange={(e) => {
+                const name = e.target.value
+                const preset = SPEED_PRESETS.find((p) => p.name === name)
+                // A custom ramp starts flat at the clip's present speed.
+                const flat = Math.min(MAX_CURVE_SPEED, Math.max(MIN_CURVE_SPEED, segment.speed))
+                const custom = {
+                  name: 'Custom',
+                  speed_points: [0, 0.5, 1].map((x) => ({ x, y: flat })),
+                }
+                commit(setSpeedCurve(draft, segment.id, name === '' ? null : (preset ?? custom)))
+              }}
+            >
+              <option value="">None</option>
+              {SPEED_PRESETS.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}
+                </option>
+              ))}
+              <option value="Custom">Custom</option>
+            </select>
+          </label>
+          {segment.curve_speed && <SpeedCurveEditor segment={segment} />}
+        </>
       )}
       {linkedCount > 1 && (
         <>
@@ -540,6 +586,65 @@ export function Inspector() {
         </>
       )}
 
+      {segment.clip && (
+        <>
+          <h2>Animation</h2>
+          {(['in', 'out'] as const).map((type) => {
+            const current = animations[type]
+            return (
+              <div key={type}>
+                <label className="field">
+                  <span>{type === 'in' ? 'In' : 'Out'}</span>
+                  <select
+                    value={current?.name ?? ''}
+                    onChange={(e) =>
+                      commit(
+                        setAnimation(
+                          draft,
+                          segment.id,
+                          type,
+                          e.target.value
+                            ? {
+                                name: e.target.value,
+                                duration: current?.duration ?? DEFAULT_ANIMATION_DURATION,
+                              }
+                            : null,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="">None</option>
+                    {ANIMATIONS[type].map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {current && (
+                  <NumberField
+                    label={type === 'in' ? 'In length' : 'Out length'}
+                    value={current.duration / US_PER_SEC}
+                    step={0.1}
+                    min={0}
+                    suffix="s"
+                    onCommit={(v) =>
+                      commit(
+                        setAnimation(draft, segment.id, type, {
+                          name: current.name,
+                          duration: v * US_PER_SEC,
+                        }),
+                      )
+                    }
+                  />
+                )}
+              </div>
+            )
+          })}
+          <p className="hint">Plays as the clip starts and as it ends, over whatever is beneath.</p>
+        </>
+      )}
+
       {canTransition && (
         <>
           <h2>Transition to next clip</h2>
@@ -582,6 +687,140 @@ export function Inspector() {
             Centred on the cut, and never longer than half of either clip. Sound still cuts at
             the cut.
           </p>
+        </>
+      )}
+
+      {visual && (
+        <>
+          <h2>Colour</h2>
+          <NumberField
+            label="Brightness"
+            value={value('KFTypeBrightness') * 100}
+            min={-100}
+            max={100}
+            keyframe={toggle('brightness', 'KFTypeBrightness')}
+            onCommit={(v) => set({ KFTypeBrightness: Math.min(100, Math.max(-100, v)) / 100 })}
+          />
+          <NumberField
+            label="Contrast"
+            value={value('KFTypeContrast') * 100}
+            min={-100}
+            max={100}
+            keyframe={toggle('contrast', 'KFTypeContrast')}
+            onCommit={(v) => set({ KFTypeContrast: Math.min(100, Math.max(-100, v)) / 100 })}
+          />
+          <NumberField
+            label="Saturation"
+            value={value('KFTypeSaturation') * 100}
+            min={-100}
+            max={100}
+            keyframe={toggle('saturation', 'KFTypeSaturation')}
+            onCommit={(v) => set({ KFTypeSaturation: Math.min(100, Math.max(-100, v)) / 100 })}
+          />
+          <p className="hint">From -100 to 100; 0 leaves the picture as it is.</p>
+        </>
+      )}
+
+      {visual && (
+        <>
+          <h2>Mask</h2>
+          <label className="field">
+            <span>Shape</span>
+            <select
+              value={segment.mask?.resource_type ?? ''}
+              onChange={(e) =>
+                commit(setMask(draft, segment.id, (e.target.value || null) as MaskType | null))
+              }
+            >
+              <option value="">None</option>
+              {MASK_TYPES.map((m) => (
+                <option key={m.type} value={m.type}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {segment.mask && (
+            <>
+              {(maskType === 'circle' || maskType === 'rectangle') && (
+                <NumberField
+                  label="Width"
+                  value={value('KFTypeCommonMaskSizeWidth') * 100}
+                  min={0.1}
+                  suffix="%"
+                  keyframe={toggle('mask width', 'KFTypeCommonMaskSizeWidth')}
+                  onCommit={(v) => set({ KFTypeCommonMaskSizeWidth: Math.max(0.1, v) / 100 })}
+                />
+              )}
+              {maskType !== 'line' && (
+                <NumberField
+                  label={maskType === 'mirror' ? 'Thickness' : 'Height'}
+                  value={value('KFTypeCommonMaskSizeHeight') * 100}
+                  min={0.1}
+                  suffix="%"
+                  keyframe={toggle('mask height', 'KFTypeCommonMaskSizeHeight')}
+                  onCommit={(v) => set({ KFTypeCommonMaskSizeHeight: Math.max(0.1, v) / 100 })}
+                />
+              )}
+              <NumberField
+                label="Centre X"
+                value={value('KFTypeCommonMaskPositionX')}
+                step={0.05}
+                keyframe={toggle('mask position', 'KFTypeCommonMaskPositionX', 'KFTypeCommonMaskPositionY')}
+                onCommit={(v) => set({ KFTypeCommonMaskPositionX: v })}
+              />
+              <NumberField
+                label="Centre Y"
+                value={value('KFTypeCommonMaskPositionY')}
+                step={0.05}
+                onCommit={(v) => set({ KFTypeCommonMaskPositionY: v })}
+              />
+              <NumberField
+                label="Mask rotation"
+                value={value('KFTypeCommonMaskRotation')}
+                suffix="°"
+                keyframe={toggle('mask rotation', 'KFTypeCommonMaskRotation')}
+                onCommit={(v) => set({ KFTypeCommonMaskRotation: v })}
+              />
+              <NumberField
+                label="Feather"
+                value={value('KFTypeCommonMaskFeather') * 100}
+                min={0}
+                max={100}
+                suffix="%"
+                keyframe={toggle('mask feather', 'KFTypeCommonMaskFeather')}
+                onCommit={(v) => set({ KFTypeCommonMaskFeather: Math.min(100, Math.max(0, v)) / 100 })}
+              />
+              {maskType === 'rectangle' && (
+                <NumberField
+                  label="Round corners"
+                  value={value('KFTypeCommonMaskRoundCorner') * 100}
+                  min={0}
+                  max={100}
+                  suffix="%"
+                  keyframe={toggle('mask corners', 'KFTypeCommonMaskRoundCorner')}
+                  onCommit={(v) =>
+                    set({ KFTypeCommonMaskRoundCorner: Math.min(100, Math.max(0, v)) / 100 })
+                  }
+                />
+              )}
+              <div className="checks" role="group" aria-label="Mask options">
+                <span>Show</span>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={segment.mask.config.invert}
+                    onChange={(e) => commit(setMaskInvert(draft, segment.id, e.target.checked))}
+                  />
+                  Outside the shape
+                </label>
+              </div>
+              <p className="hint">
+                Sizes are a share of the picture's width and height. The centre is in half-picture
+                units: 1 puts it on the edge.
+              </p>
+            </>
+          )}
         </>
       )}
 

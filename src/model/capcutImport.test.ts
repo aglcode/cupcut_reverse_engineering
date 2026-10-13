@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { importCapCutDraft, openProject } from './capcutImport'
 import { cropInsets, isCropped } from './crop'
 import { easingAt, evalProperty } from './keyframes'
+import { clipMarkers } from './markers'
 import { addText } from './ops'
+import { averageSpeed } from './speedCurve'
+import { sourceTimeAt, speedAtTime } from './timing'
 import { DEFAULT_TEXT_STYLE } from './textStyle'
 import { emptyDraft } from './types'
 
@@ -36,7 +39,8 @@ const fixture = {
             alpha: 0.8,
           },
           material_id: 'V1',
-          extra_material_refs: ['SP1', 'AN1', 'TR1', 'CV1'],
+          extra_material_refs: ['SP1', 'AN1', 'TR1', 'CV1', 'TM1', 'AD1', 'AD2', 'AD3'],
+          enable_adjust: true,
           visible: true,
           common_keyframes: [
             {
@@ -83,7 +87,8 @@ const fixture = {
           volume: 1.0,
           clip: null,
           material_id: 'V1',
-          extra_material_refs: ['SP2', 'AN0', 'CV2'],
+          extra_material_refs: ['SP2', 'AN0', 'CV2', 'MX1', 'AD4'],
+          enable_adjust: false,
           visible: true,
           common_keyframes: [],
         },
@@ -215,12 +220,18 @@ const fixture = {
         id: 'SP2',
         type: 'speed',
         mode: 1,
-        speed: 5.25,
+        // As found on a real clip: the ramp's own average is 5.2508, while
+        // the clip, rounded to six frames, plays 966667 of source in 200000.
+        speed: 5.2508055861414,
         curve_speed: {
+          id: '6768730851543880206',
           name: 'Bullet',
+          source_platform: 1,
           speed_points: [
-            { x: 0, y: 9.6 },
-            { x: 1, y: 9.6 },
+            { x: 0, y: 9.666666984558105 },
+            { x: 0.5, y: 0.829999983310699 },
+            { x: 0.5, y: 0.839999973773956 },
+            { x: 1, y: 9.666666984558105 },
           ],
         },
       },
@@ -234,6 +245,23 @@ const fixture = {
       },
     ],
     video_effects: [{ id: 'E1', type: 'video_effect', name: 'Flash' }],
+    // The three adjust entries are as found on the one adjusted clip in a real draft.
+    effects: [
+      { id: 'AD1', type: 'brightness', value: 0, version: 'v2', path: 'C:/app/Resources/DefaultAdjustBundle/x' },
+      { id: 'AD2', type: 'contrast', value: 0, version: 'v2', path: 'C:/app/Resources/DefaultAdjustBundle/x' },
+      { id: 'AD3', type: 'saturation', value: -1, version: 'v2', path: 'C:/app/Resources/DefaultAdjustBundle/x' },
+      { id: 'AD4', type: 'brightness', value: 0.5, version: 'v2', path: 'C:/app/Resources/DefaultAdjustBundle/x' },
+      { id: 'MX1', type: 'mix_mode', value: 1, version: '', path: 'C:/cache/effect/1' },
+    ],
+    time_marks: [
+      {
+        id: 'TM1',
+        mark_items: [
+          { id: 'MK2', color: '#00c1cd', title: 'Marker 02', time_range: { start: 1200000, duration: 0 } },
+          { id: 'MK1', color: '#00c1cd', title: 'Marker 01', time_range: { start: 700000, duration: 0 } },
+        ],
+      },
+    ],
     canvases: [
       { id: 'CV1', type: 'canvas_color', color: '#112233FF', blur: 0, image: '', album_image: '' },
       { id: 'CV2', type: 'canvas_blur', color: '', blur: 0.375, image: '', album_image: '' },
@@ -306,20 +334,29 @@ describe('importCapCutDraft', () => {
     expect(draft.tracks[2].segments[0].source_timerange).toBeNull()
   })
 
-  it('imports a speed ramp at its average speed with a consistent source range', () => {
+  it('imports a speed ramp with its points and its real source range', () => {
     const s = draft.tracks[1].segments[1]
-    expect(s.speed).toBeCloseTo(5.2508, 3)
-    expect(s.source_timerange?.duration).toBe(Math.round(s.target_timerange.duration * s.speed))
+    expect(s.source_timerange).toEqual({ start: 0, duration: 966667 })
+    expect(s.curve_speed?.name).toBe('Bullet')
+    expect(s.curve_speed?.speed_points.map((p) => p.x)).toEqual([0, 0.5, 0.5, 1])
+    // Speed is what actually plays: source over timeline length.
+    expect(s.speed).toBeCloseTo(966667 / 200000, 9)
+    expect(averageSpeed(s.curve_speed!.speed_points)).toBeCloseTo(s.speed, 9)
+    // Half the source has gone by half-way through this all but symmetrical
+    // ramp, and it is at its slowest there.
+    expect(sourceTimeAt(s, 1_100_000)).toBeCloseTo(966667 / 2, -2)
+    expect(speedAtTime(s, 1_100_000)).toBeLessThan(1)
+    expect(speedAtTime(s, 1_000_000)).toBeGreaterThan(8)
   })
 
   it('reports what it left out', () => {
     expect(warnings).toEqual([
       '1 effect track not imported',
       '1 filter track not imported',
-      '1 clip with a speed ramp imported at average speed',
-      '1 clip uses in/out animations, which were not imported',
+      '1 clip uses blend modes, which were not imported',
       '1 text clip shown in the default font (CapCut fonts cannot be loaded)',
       '1 transition replaced with a Mix (cross-dissolve) of the same length',
+      '1 animation replaced with a fade of the same length',
     ])
   })
 
@@ -374,6 +411,25 @@ describe('importCapCutDraft', () => {
     expect(importCapCutDraft(overlayOnly).draft.config.maintrack_adsorb).toBe(false)
   })
 
+  it('imports clip markers, which are in the source time of the clip', () => {
+    const s = draft.tracks[1].segments[0]
+    expect(s.time_marks.map((m) => [m.title, m.time_range.start])).toEqual([
+      ['Marker 01', 700000],
+      ['Marker 02', 1200000],
+    ])
+    // The clip plays source 0.5 s - 1.5 s from timeline 0, so they show at 0.2 s and 0.7 s.
+    expect(clipMarkers(s).map((m) => m.time)).toEqual([200000, 700000])
+    expect(draft.time_marks).toEqual([])
+  })
+
+  it('imports colour adjustment, and says what other effects it left out', () => {
+    const [first, second] = draft.tracks[1].segments
+    expect(first.adjust).toEqual({ brightness: 0, contrast: 0, saturation: -1 })
+    // The second clip has brightness 0.5 stored but enable_adjust is false.
+    expect(second.adjust).toEqual({ brightness: 0, contrast: 0, saturation: 0 })
+    expect(warnings.some((w) => /colour adjustments/.test(w))).toBe(false)
+  })
+
   it('imports a transition onto the outgoing clip', () => {
     const [first, second] = draft.tracks[1].segments
     expect(first.transition).toEqual({ name: 'Mix', duration: 400000 })
@@ -404,11 +460,14 @@ describe('importCapCutDraft', () => {
         delete seg.canvas
         delete seg.reverse
         delete seg.group_id
+        delete seg.time_marks
+        delete seg.adjust
         delete seg.freeze
         if (seg.clip) delete seg.clip.flip
       }
     }
     delete old.config
+    delete old.time_marks
     for (const material of old.materials.videos) delete material.crop
     for (const material of old.materials.audios) delete material.name
     for (const text of old.materials.texts) {
@@ -422,6 +481,9 @@ describe('importCapCutDraft', () => {
     expect(segments.every((x) => x.canvas === null)).toBe(true)
     expect(reopened.config).toEqual({ maintrack_adsorb: false, export_range: null })
     expect(segments.every((x) => x.group_id === '')).toBe(true)
+    expect(segments.every((x) => Array.isArray(x.time_marks) && x.time_marks.length === 0)).toBe(true)
+    expect(reopened.time_marks).toEqual([])
+    expect(segments.every((x) => x.adjust.brightness === 0 && x.adjust.saturation === 0)).toBe(true)
     expect(reopened.materials.audios[0].name).toBe('song.mp3')
     expect(segments.every((x) => x.reverse === false && x.freeze === false)).toBe(true)
     expect(segments.every((x) => !x.clip || x.clip.flip.horizontal === false)).toBe(true)

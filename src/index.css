@@ -173,6 +173,44 @@ textarea {
   border-left: 1px solid var(--border);
 }
 
+.speed-curve svg {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  touch-action: none;
+  user-select: none;
+}
+
+.speed-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.speed-grid-label {
+  fill: var(--muted);
+  font-size: 8px;
+}
+
+.speed-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.speed-point {
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: grab;
+}
+
+.speed-point:focus-visible {
+  outline: none;
+  fill: var(--accent);
+}
+
 .hint {
   margin: 0;
   color: var(--muted);
@@ -323,6 +361,7 @@ input[type='color'] {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
@@ -583,6 +622,24 @@ input[type='color'] {
   clip-path: polygon(0 0, 100% 0, 100% 100%);
 }
 
+.anim {
+  position: absolute;
+  bottom: 0;
+  height: 4px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.anim-in {
+  left: 0;
+  border-top-right-radius: 4px;
+}
+
+.anim-out {
+  right: 0;
+  border-top-left-radius: 4px;
+}
+
 .checks {
   display: grid;
   grid-template-columns: 84px minmax(0, 1fr);
@@ -684,8 +741,61 @@ button.toggle.on {
   pointer-events: none;
 }
 
+/* The band itself lets clicks through to the ruler; only its ends are grabbed. */
+.range-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+  pointer-events: auto;
+}
+
+.range-handle-start {
+  left: -6px;
+}
+
+.range-handle-end {
+  right: -6px;
+}
+
 .range-choice {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* A marker on the ruler: a small flag. */
+.marker {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  width: 9px;
+  height: 11px;
+  margin-left: -4px;
+  clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%);
+  cursor: pointer;
+}
+
+/* A marker on a clip: the same flag, along the clip's top edge. */
+.clip-marker {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  width: 7px;
+  height: 9px;
+  margin-left: -3px;
+  clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%);
+  cursor: pointer;
+}
+
+/* Shown where a dragged edge has snapped. */
+.snap-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 1px;
+  background: #ffd24a;
+  pointer-events: none;
 }

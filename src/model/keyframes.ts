@@ -20,6 +20,7 @@ import { frameDuration, snapToFrame } from './time'
 import { sourceTimeAt, timelineTimeAt, usesSourceTime } from './timing'
 import {
   DEFAULT_CLIP,
+  DEFAULT_MASK_CONFIG,
   newId,
   segmentEnd,
   type Clip,
@@ -48,8 +49,27 @@ const listFor = (segment: Segment, property: KeyframeProperty): KeyframeList | u
 export const isAnimated = (segment: Segment, property: KeyframeProperty): boolean =>
   (listFor(segment, property)?.keyframe_list.length ?? 0) > 0
 
+// The mask setting each mask property animates.
+export const MASK_FIELDS = {
+  KFTypeCommonMaskSizeWidth: 'width',
+  KFTypeCommonMaskSizeHeight: 'height',
+  KFTypeCommonMaskPositionX: 'centerX',
+  KFTypeCommonMaskPositionY: 'centerY',
+  KFTypeCommonMaskRotation: 'rotation',
+  KFTypeCommonMaskFeather: 'feather',
+  KFTypeCommonMaskRoundCorner: 'roundCorner',
+} as const
+
+type MaskProperty = keyof typeof MASK_FIELDS
+
+export const isMaskProperty = (property: KeyframeProperty): property is MaskProperty =>
+  property in MASK_FIELDS
+
 // The value a property has when it is not animated.
 export function baseValue(segment: Segment, property: KeyframeProperty): number {
+  if (isMaskProperty(property)) {
+    return (segment.mask?.config ?? DEFAULT_MASK_CONFIG)[MASK_FIELDS[property]]
+  }
   const clip = segment.clip ?? DEFAULT_CLIP
   switch (property) {
     case 'KFTypePositionX':
@@ -66,6 +86,12 @@ export function baseValue(segment: Segment, property: KeyframeProperty): number 
       return clip.alpha
     case 'KFTypeVolume':
       return segment.volume
+    case 'KFTypeBrightness':
+      return segment.adjust.brightness
+    case 'KFTypeContrast':
+      return segment.adjust.contrast
+    case 'KFTypeSaturation':
+      return segment.adjust.saturation
   }
 }
 
@@ -151,7 +177,21 @@ function replace(draft: Draft, next: Segment): Draft {
 
 // Writes the static value of a property.
 export function withBaseValue(segment: Segment, property: KeyframeProperty, value: number): Segment {
-  if (property === 'KFTypeVolume') return { ...segment, volume: value }
+  if (isMaskProperty(property)) {
+    const mask = segment.mask
+    if (!mask) return segment
+    return { ...segment, mask: { ...mask, config: { ...mask.config, [MASK_FIELDS[property]]: value } } }
+  }
+  switch (property) {
+    case 'KFTypeVolume':
+      return { ...segment, volume: value }
+    case 'KFTypeBrightness':
+      return { ...segment, adjust: { ...segment.adjust, brightness: value } }
+    case 'KFTypeContrast':
+      return { ...segment, adjust: { ...segment.adjust, contrast: value } }
+    case 'KFTypeSaturation':
+      return { ...segment, adjust: { ...segment.adjust, saturation: value } }
+  }
   const clip = segment.clip
   if (!clip) return segment
   switch (property) {

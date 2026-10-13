@@ -1,8 +1,10 @@
 // Draws one resolved frame. Everything is expressed relative to the canvas
 // size, so the same draft renders identically at any export resolution.
 
+import { adjustFilter } from '../model/adjust'
 import { BLUR_RADIUS_PER_UNIT } from '../model/background'
 import { cropRect, type CropRect } from '../model/crop'
+import { maskShape, type MaskShape } from '../model/mask'
 import type { CanvasBackground, Clip } from '../model/types'
 import type { VisualLayer } from './resolve'
 import { drawText } from './text'
@@ -71,6 +73,48 @@ function drawBackground(
   ctx.restore()
 }
 
+// Where a masked clip is drawn before it goes onto the frame, so that the
+// mask cuts into the clip alone and not into what is already underneath.
+let scratch: OffscreenCanvas | null = null
+
+function scratchFor(width: number, height: number): OffscreenCanvasRenderingContext2D | null {
+  if (!scratch || scratch.width !== width || scratch.height !== height) {
+    scratch = new OffscreenCanvas(width, height)
+  }
+  const ctx = scratch.getContext('2d')
+  if (!ctx) return null
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.globalAlpha = 1
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.filter = 'none'
+  ctx.clearRect(0, 0, width, height)
+  return ctx
+}
+
+// Fills the mask's shape, in the clip's own space. `far` is a length longer
+// than anything on the frame, for the shapes that have no end.
+function fillMask(ctx: Ctx, shape: MaskShape, far: number) {
+  ctx.translate(shape.cx, shape.cy)
+  ctx.rotate(shape.rotation)
+  ctx.beginPath()
+  switch (shape.type) {
+    case 'line':
+      ctx.rect(-far, -far, far * 2, far)
+      break
+    case 'mirror':
+      ctx.rect(-far, -shape.height / 2, far * 2, shape.height)
+      break
+    case 'circle':
+      ctx.ellipse(0, 0, shape.width / 2, shape.height / 2, 0, 0, Math.PI * 2)
+      break
+    case 'rectangle':
+      ctx.roundRect(-shape.width / 2, -shape.height / 2, shape.width, shape.height, shape.radius)
+      break
+  }
+  ctx.fillStyle = '#fff'
+  ctx.fill()
+}
+
 export function drawFrame(
   ctx: Ctx,
   width: number,
@@ -112,9 +156,14 @@ export function drawFrame(
       ctx.globalAlpha = fx ? fx.alpha : 1
       drawBackground(ctx, layer.segment.canvas, frame, crop, width, height)
     }
-    applyClip(ctx, clip, width, height)
-    if (fx) ctx.globalAlpha *= fx.alpha
+    // A masked clip is drawn and cut on its own, then laid on the frame.
+    const masked = layer.mask && frame ? scratchFor(width, height) : null
+    const target = masked ?? ctx
+    applyClip(target, masked ? { ...clip, alpha: 1 } : clip, width, height)
+    if (fx && !masked) ctx.globalAlpha *= fx.alpha
     if (frame) {
+      // Colour adjustment applies to the clip's picture, not to what is behind it.
+      target.filter = adjustFilter(layer.adjust)
       // Only the cropped region is drawn. At scale 1 it is fitted inside
       // the canvas, the same way an uncropped frame is.
       const sw = frame.width * crop.width
@@ -122,7 +171,7 @@ export function drawFrame(
       const fit = Math.min(width / sw, height / sh)
       const w = sw * fit
       const h = sh * fit
-      ctx.drawImage(
+      target.drawImage(
         frame.image,
         frame.width * crop.x,
         frame.height * crop.y,
@@ -133,6 +182,18 @@ export function drawFrame(
         w,
         h,
       )
+      if (masked && layer.mask) {
+        const shape = maskShape(layer.mask, w, h)
+        // Keeps the picture inside the shape, or with invert, outside it.
+        masked.globalCompositeOperation = shape.invert ? 'destination-out' : 'destination-in'
+        // A blur is measured on the frame, not in the clip's own space, so the
+        // soft edge is scaled along with the clip by hand.
+        const soft = shape.feather * Math.sqrt(Math.abs(clip.scale.x * clip.scale.y))
+        masked.filter = soft > 0.05 ? `blur(${soft}px)` : 'none'
+        fillMask(masked, shape, (width + height) * 100)
+        ctx.globalAlpha = Math.min(1, Math.max(0, clip.alpha)) * (fx ? fx.alpha : 1)
+        ctx.drawImage(masked.canvas, 0, 0)
+      }
     }
     ctx.restore()
   }

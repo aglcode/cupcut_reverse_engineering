@@ -32,6 +32,16 @@ export type KeyframeProperty =
   | 'KFTypeRotation'
   | 'KFTypeAlpha'
   | 'KFTypeVolume'
+  | 'KFTypeBrightness'
+  | 'KFTypeContrast'
+  | 'KFTypeSaturation'
+  | 'KFTypeCommonMaskSizeWidth'
+  | 'KFTypeCommonMaskSizeHeight'
+  | 'KFTypeCommonMaskPositionX'
+  | 'KFTypeCommonMaskPositionY'
+  | 'KFTypeCommonMaskRotation'
+  | 'KFTypeCommonMaskFeather'
+  | 'KFTypeCommonMaskRoundCorner'
 
 export type Point = { x: number; y: number }
 
@@ -62,7 +72,51 @@ export type CanvasBackground =
   | { type: 'canvas_color'; color: string }
   | { type: 'canvas_blur'; blur: number }
 
+// A marker. See markers.ts for what time_range.start is measured in.
+export type MarkItem = {
+  id: string
+  color: string
+  title: string
+  time_range: TimeRange
+}
+
+// Colour adjustment, each from -1 to 1 with 0 leaving the picture alone.
+// See adjust.ts.
+export type Adjust = { brightness: number; contrast: number; saturation: number }
+
 export type AudioFade = { fade_in_duration: number; fade_out_duration: number }
+
+// A mask over a clip's picture. See mask.ts for the shapes and the units.
+export type MaskType = 'line' | 'mirror' | 'circle' | 'rectangle'
+export type MaskConfig = {
+  width: number
+  height: number
+  centerX: number
+  centerY: number
+  rotation: number
+  feather: number
+  roundCorner: number
+  invert: boolean
+}
+export type Mask = { name: string; resource_type: MaskType; config: MaskConfig }
+
+export const DEFAULT_MASK_CONFIG: MaskConfig = {
+  width: 0.5,
+  height: 0.5,
+  centerX: 0,
+  centerY: 0,
+  rotation: 0,
+  feather: 0,
+  roundCorner: 0,
+  invert: false,
+}
+
+// How a clip arrives ("in") or leaves ("out"). See animations.ts.
+export type ClipAnimation = { type: 'in' | 'out'; name: string; duration: number }
+
+// A speed ramp. See speedCurve.ts for what the points mean.
+export type SpeedPoint = { x: number; y: number }
+export type SpeedCurve = { name: string; speed_points: SpeedPoint[] }
 
 export type Segment = {
   id: string
@@ -71,7 +125,10 @@ export type Segment = {
   source_timerange: TimeRange | null
   // Range on the timeline.
   target_timerange: TimeRange
+  // Source length over timeline length. With a ramp this is the average.
   speed: number
+  // null when the clip plays at one speed throughout.
+  curve_speed: SpeedCurve | null
   volume: number
   clip: Clip | null
   visible: boolean
@@ -86,6 +143,12 @@ export type Segment = {
   freeze: boolean
   // Clips with the same non-empty group_id are linked. See links.ts.
   group_id: string
+  // Markers on this clip, in the clip's own time base so they travel with it.
+  time_marks: MarkItem[]
+  adjust: Adjust
+  mask: Mask | null
+  // At most one "in" and one "out".
+  animations: ClipAnimation[]
 }
 
 export type TrackType = 'video' | 'audio' | 'text'
@@ -166,6 +229,8 @@ export type Draft = {
   // export_range is the part of the timeline an export covers; null is all
   // of it. See exportRange.ts.
   config: { maintrack_adsorb: boolean; export_range: TimeRange | null }
+  // Markers on the timeline itself, in timeline time.
+  time_marks: MarkItem[]
   // Array order is render order: later tracks draw on top.
   tracks: Track[]
   materials: Materials
@@ -190,6 +255,7 @@ export function emptyDraft(): Draft {
     duration: 0,
     canvas_config: { width: 1920, height: 1080 },
     config: { maintrack_adsorb: false, export_range: null },
+    time_marks: [],
     tracks: [{ id: newId(), type: 'video', name: 'Video 1', segments: [] }],
     materials: { videos: [], audios: [], texts: [] },
   }

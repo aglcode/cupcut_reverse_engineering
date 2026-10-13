@@ -7,11 +7,12 @@ import {
   markIn,
   markOut,
   markSegments,
+  moveRangeEdge,
   setExportRange,
 } from './exportRange'
 import { addMedia, addText, removeSegment, setMagnet } from './ops'
 import { frameToUs } from './time'
-import { emptyDraft, newId, type VideoMaterial } from './types'
+import { emptyDraft, newId, type Draft, type VideoMaterial } from './types'
 
 const video = (seconds: number): VideoMaterial => ({
   id: newId(),
@@ -105,5 +106,42 @@ describe('export range', () => {
     const { draft } = ten()
     const marked = setExportRange(draft, 1_000_000, 2_000_000)
     expect(setMagnet(marked, true).config.export_range).toEqual({ start: 1_000_000, duration: 1_000_000 })
+  })
+})
+
+describe('dragging an end of the range', () => {
+  // A 10 s timeline with 2 s to 6 s marked.
+  const marked = (): Draft => setExportRange({ ...emptyDraft(), duration: 10_000_000 }, 2_000_000, 6_000_000)
+  const frame = 1_000_000 / 30
+
+  it('moves that end and keeps the other', () => {
+    expect(effectiveRange(moveRangeEdge(marked(), 'start', 3_000_000))).toEqual({ start: 3_000_000, duration: 3_000_000 })
+    expect(effectiveRange(moveRangeEdge(marked(), 'end', 8_000_000))).toEqual({ start: 2_000_000, duration: 6_000_000 })
+  })
+
+  it('lands on the frame grid', () => {
+    const range = effectiveRange(moveRangeEdge(marked(), 'start', 3_010_000))
+    expect(range.start).toBe(3_000_000)
+  })
+
+  it('stops a frame short of the other end instead of passing it', () => {
+    const start = effectiveRange(moveRangeEdge(marked(), 'start', 9_000_000))
+    expect(start.start + start.duration).toBe(6_000_000)
+    expect(start.duration).toBeCloseTo(frame, -1)
+    const end = effectiveRange(moveRangeEdge(marked(), 'end', 500_000))
+    expect(end.start).toBe(2_000_000)
+    expect(end.duration).toBeCloseTo(frame, -1)
+  })
+
+  it('stays inside the timeline', () => {
+    expect(effectiveRange(moveRangeEdge(marked(), 'start', -5_000_000)).start).toBe(0)
+    const end = effectiveRange(moveRangeEdge(marked(), 'end', 99_000_000))
+    expect(end.start + end.duration).toBe(10_000_000)
+  })
+
+  it('dragged out to cover everything, the range is no longer marked', () => {
+    const wide = moveRangeEdge(moveRangeEdge(marked(), 'start', 0), 'end', 10_000_000)
+    expect(hasExportRange(wide)).toBe(false)
+    expect(wide.config.export_range).toBeNull()
   })
 })

@@ -34,12 +34,27 @@ Suggested next batch, on the same basis:
 Suggested next batch, on the same basis:
 
 - [x] 14. Project persistence: keep imported media between sessions
-- [ ] 15. Copy, cut and paste clips; duplicate
-- [ ] 16. Timeline markers, and snapping clips to the playhead, markers and other clips
-- [ ] 17. Basic colour adjustment: brightness, contrast, saturation (keyframeable)
-- [ ] 18. Long and 4K exports: write to disk as it goes instead of holding the file in memory
+- [x] 15. Copy, cut and paste clips; duplicate
+- [x] 16. Timeline markers, and snapping clips to the playhead, markers and other clips
+- [x] 17. Basic colour adjustment: brightness, contrast, saturation (keyframeable)
+- [x] 18. Long and 4K exports: write to disk as it goes instead of holding the file in memory
+
+Suggested next batch, on the same basis:
+
+- [x] 19. Speed ramps, imported from CapCut drafts
+- [x] 20. Masks
+- [x] 21. In/out animations on clips and text
+- [x] 22. Save an export straight to a chosen file
+- [x] 23. Drag the ends of the export range on the ruler
 
 ## Done
+
+- [x] Export straight to a file you pick, where the browser has a save dialog for web pages
+- [x] The ends of the export range can be dragged on the ruler, with snapping
+- [x] In and out animations on clips and titles (fade, four slides, two zooms), with CapCut's Fade In and Fade Out imported
+- [x] Masks: Split, Mirror, Circle and Rectangle, with position, size, rotation, feather, round corners and invert, all keyframeable, imported from CapCut drafts
+- [x] Speed ramps: CapCut's Hero and Bullet curves, custom curves on a graph, imported from CapCut drafts with their timing intact
+- [x] Exports are written to disk as they are encoded, with sound decoded and mixed ten seconds at a time
 
 - [x] Draft model in CapCut's shape (tracks, segments, materials, microsecond time)
 - [x] Video, audio and text tracks
@@ -64,6 +79,10 @@ Suggested next batch, on the same basis:
 - [x] Keyframe easing (Linear, Ease in, Ease out, Ease in-out) as the bezier handles CapCut stores, and keyframes that can be dragged
 - [x] Export range (mark in, mark out, mark from clips) and a choice of H.264, HEVC, AV1 or VP9
 - [x] The project and its media are kept in the browser and restored on the next visit
+- [x] Copy, cut, paste and duplicate, for one clip or many, across tracks and between projects
+- [x] Markers on the timeline and on clips (stored as CapCut stores them, imported from CapCut drafts)
+- [x] Colour adjustment per clip: brightness, contrast and saturation, keyframeable, imported from CapCut drafts
+- [x] Snapping to the playhead, markers and other clips' edges while moving or trimming
 - [x] Extract audio from a video clip into a linked audio clip
 - [x] Linked clips: selected, moved and deleted together, and following their main-track clip under the magnet
 - [x] Text styling: system fonts, bold, italic, underline, alignment, letter and line spacing, outline, shadow, background box; CapCut's style fields imported
@@ -74,10 +93,15 @@ Suggested next batch, on the same basis:
 - [x] Keyframe easing: Linear, Ease in, Ease out, Ease in-out; CapCut's eased keyframes imported as they are
 - [ ] A curve editor for custom easing (custom handles are imported and played, but can only be replaced by a preset)
 - [ ] Confirm CapCut's handles for Ease Out and Ease In-Out (only Ease In appears in the local drafts)
-- [ ] Keyframes for other properties (colour, text style, masks) once those features exist
+- [x] Keyframes for colour adjustment
+- [ ] Keyframes for text style (masks have them)
 - [x] Drag keyframes along the clip to retime them
 - [ ] Copy and paste keyframes
-- [ ] Speed ramps (curve presets such as "Bullet" and "Hero")
+- [x] Speed ramps (curve presets such as "Bullet" and "Hero"), with a graph to edit them
+- [ ] CapCut's other ramp presets (only Hero and Bullet appear in the local drafts)
+- [ ] Confirm how CapCut plays a ramp on a reversed clip (no local example; the ramp is taken to run in playing order)
+- [ ] Preview keeps closer to a steep ramp while playing (it can trail by about a third of a second; paused frames and the export are exact)
+- [ ] A linked clip follows a speed or ramp change made to its partner (extracting audio copies the ramp, later changes are not shared)
 - [x] Reverse playback
 - [ ] Reversed sound in the preview (it is in the export; the preview plays reversed clips silently)
 - [ ] Faster export of long reversed clips (each frame is decoded from the previous keyframe)
@@ -87,12 +111,19 @@ Suggested next batch, on the same basis:
 - [ ] More transition looks (CapCut's own are shader bundles; other imported looks become Mix)
 - [ ] Audio crossfade during a transition (sound currently cuts at the cut)
 - [ ] Confirm where CapCut places the transition window (centred on the cut is assumed)
-- [ ] In/out/loop animations on clips and text
+- [x] In and out animations on clips and text
+- [ ] Loop and combo animations (CapCut `loop` and `group`; reported and left out on import)
+- [ ] More animation looks (CapCut's own are effect bundles; other imported looks become a fade of the same length)
+- [ ] Drag an animation's length on the clip (currently a numeric field)
 - [x] Crop, flip and mirror (mirror is the horizontal flip)
 - [ ] Interactive crop box on the preview, with aspect-ratio presets (1:1, 9:16 and so on); currently numeric fields
 - [ ] Rotated crops (imported as their upright bounding box)
 - [ ] Confirm against CapCut how a cropped clip is sized, and what `crop_scale` does
-- [ ] Masks, including mask stroke and shadow
+- [x] Masks: Split, Mirror, Circle and Rectangle
+- [ ] Mask stroke and shadow (CapCut has keyframe properties for both)
+- [ ] More mask shapes (heart, star, text, drawn outline) and CapCut's `expansion` setting
+- [ ] Move, size and turn a mask by dragging on the preview (currently numeric fields)
+- [ ] Confirm against CapCut the mask's centre units, rotation direction, feather strength and which side a Split shows (all zero or default in the two local examples)
 - [x] Canvas background: colour or blurred picture behind a clip
 - [ ] Image as a canvas background (CapCut `canvas_image`; imported without it)
 - [ ] Apply one background to every clip at once
@@ -102,7 +133,10 @@ Suggested next batch, on the same basis:
 - [x] Multi-select: Ctrl/Shift-click, box selection, Ctrl+A; move and delete several clips at once
 - [ ] Move a group of clips to other tracks (a group currently moves in time only)
 - [ ] Edit a setting on several clips at once
-- [ ] Copy, cut and paste clips
+- [x] Copy, cut, paste and duplicate clips
+- [ ] Paste attributes (CapCut `PasteSegmentAttribute`): apply one clip's look to others
+- [ ] Use the system clipboard, so clips can be pasted into another tab or after a reload
+- [ ] Confirm where CapCut puts pasted clips and how it settles a conflict (not observable from a draft)
 - [x] Clip grouping on `group_id`: Link and Unlink for any selection
 - [x] Linked audio/video (and linking any clips together)
 - [ ] Linked clips trim together (a trim currently changes one clip only)
@@ -112,8 +146,14 @@ Suggested next batch, on the same basis:
 - [ ] Linkage (CapCut `linkage_enabled`) for clips that are not linked: overlays and titles that travel with the main-track clip they sit over
 - [ ] Ripple trim on tracks other than the main one
 - [ ] A group move that includes main-track clips: with the magnet on the group is blocked by the packed clips around it, or jumps past them
-- [ ] Timeline markers
-- [ ] Beat markers on audio
+- [x] Timeline markers, and markers on clips that travel with the clip
+- [x] Snapping while moving and trimming: playhead, markers, other clips' edges
+- [ ] Rename and recolour markers
+- [ ] Drag a marker to move it
+- [ ] Snapping for the playhead, keyframes, the export range and reordering on the main track
+- [ ] Confirm CapCut's timeline-level `time_marks` shape (null in every local draft) and what its auto snap snaps to
+- [x] Beat markers on audio: CapCut's are imported as clip markers (its `user_beats` and `mark_items` are the same list)
+- [ ] Detect beats automatically (CapCut `ai_beats`)
 - [x] Thumbnails on video clips
 - [x] Waveforms on audio clips
 - [ ] Waveform on video clips that have sound (extracting the audio shows it on the audio clip)
@@ -124,7 +164,11 @@ Suggested next batch, on the same basis:
 
 - [ ] Filters
 - [ ] Video effects
-- [ ] Basic colour adjustment (brightness, contrast and similar)
+- [x] Basic colour adjustment: brightness, contrast, saturation, with keyframes and easing
+- [ ] More adjustments CapCut has: temperature, hue, highlights, shadows, sharpen, vignette, fade
+- [ ] Calibrate brightness and contrast strength against CapCut (only saturation -1 is pinned down by a real draft)
+- [ ] Adjustment as its own timeline layer covering several clips (CapCut has adjust tracks)
+- [ ] Thumbnails that reflect the adjustment
 - [ ] HSL adjustment
 - [ ] Colour curves
 - [ ] Colour wheels
@@ -185,11 +229,17 @@ Suggested next batch, on the same basis:
 - [x] HEVC and AV1 codecs (and VP9), offered when this computer can encode them
 - [ ] MOV, GIF and audio-only output `*`
 - [x] Export range (part of the timeline)
-- [ ] Drag the ends of the export range on the ruler
+- [x] Drag the ends of the export range on the ruler
 - [ ] Read CapCut's own `export_range` (null in every local draft, so its shape is unknown)
 - [ ] Cover image selection
 - [ ] Background export
-- [ ] Long and 4K projects (export currently holds the audio mix and output in memory)
+- [x] Long and 4K projects: the export is written to disk as it goes, and sound is decoded and mixed a stretch at a time
+- [x] Save an export straight to a file the user picks ("Export to file…"; the plain Export still goes through the browser's private store and a download)
+- [ ] Try "Export to file…" with the real save dialog (the checks here answer the dialog in code, since a headless browser cannot show it)
+- [ ] Remove the empty file left behind when an export to a newly named file is cancelled
+- [ ] Put the MP4 index at the front of a disk-written export (it is at the end, which is slower to start when streamed from a web server)
+- [ ] Test hour-long and multi-gigabyte exports (verified up to 65 s, and 20 s at 4K)
+- [ ] Sound from files the streaming decoder cannot read is still decoded whole
 
 ## App and platform
 

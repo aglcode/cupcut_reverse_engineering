@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { assetKey } from '../engine/media'
+import { effectiveAnimations } from '../model/animations'
 import { effectiveFade } from '../model/fades'
-import { effectiveRange, hasExportRange } from '../model/exportRange'
+import { effectiveRange, hasExportRange, moveRangeEdge } from '../model/exportRange'
 import { keyframeTimes, moveKeyframes } from '../model/keyframes'
 import { isOneLink, linkedIds } from '../model/links'
+import { clipMarkers, removeMarker } from '../model/markers'
+import { snapMove, snapTargets, snapTime } from '../model/snap'
 import {
   addTrack,
   findMaterial,
@@ -27,6 +30,8 @@ const TICK_STEPS = [0.1, 0.5, 1, 2, 5, 10, 30, 60, 300]
 const MIN_TICK_PX = 70
 // Inner height of a clip: the 46px row less its margins and border.
 const CLIP_HEIGHT = 34
+// How close, in pixels, a dragged edge has to come to something before it snaps.
+const SNAP_PIXELS = 8
 // Clip pictures are drawn this far beyond the visible area, so a little
 // scrolling shows them already in place.
 const OVERSCAN = 300
@@ -68,6 +73,12 @@ export function Timeline() {
   const { commit, undo, redo, select, setZoom, setPlayhead } = useEditor.getState()
   const { splitAtPlayhead, deleteSelected, addTextAtPlayhead } = useEditor.getState()
   const { rippleDeleteSelected } = useEditor.getState()
+  const { copySelected, cutSelected, paste, duplicateSelected } = useEditor.getState()
+  const canPaste = useEditor((s) => s.clipboard !== null)
+  const snapping = useEditor((s) => s.snapping)
+  const { toggleSnapping, toggleMarkerAtPlayhead } = useEditor.getState()
+  // Where a dragged edge has snapped to, shown as a line while it is held there.
+  const [snapLine, setSnapLine] = useState<number | null>(null)
   const magnet = draft.config.maintrack_adsorb
 
   const rulerRef = useRef<HTMLDivElement>(null)
@@ -160,6 +171,19 @@ export function Timeline() {
     // began. Building on the previous move instead would compound: with the
     // magnet on, a trimmed clip closes up and would then be trimmed again.
     const base = useEditor.getState().draft
+    // What a dragged edge may snap to: the playhead, markers and the edges of
+    // clips that are not part of this drag. The magnet's main track has no
+    // free positions to snap into, so a drag that reorders it does not snap.
+    const moving = group ? before : link ? own : [segment.id]
+    const onMagnetTrack = moving.some((id) => {
+      const where = base.tracks.findIndex((t) => t.segments.some((s) => s.id === id))
+      return isMagnetTrack(base, where)
+    })
+    const targets =
+      useEditor.getState().snapping && !(mode === 'move' && onMagnetTrack)
+        ? snapTargets(base, useEditor.getState().playhead, moving)
+        : []
+    const reach = SNAP_PIXELS / pxPerUs
     let checkpointed = false
     // Whether the pointer really travelled. A drag that could not move anything
     // (the group is boxed in) is still a drag, not a click.
@@ -168,12 +192,21 @@ export function Timeline() {
     const move = (ev: PointerEvent) => {
       const state = useEditor.getState()
       if (Math.abs(ev.clientX - e.clientX) > 3 || Math.abs(ev.clientY - e.clientY) > 3) dragged = true
-      const t = timeAt(ev.clientX)
+      const pointer = timeAt(ev.clientX)
+      // A move snaps whichever end of the dragged clip is nearer something; a
+      // trim snaps the edge being dragged.
+      const snap =
+        mode === 'move'
+          ? snapMove(pointer - grab, segment.target_timerange.duration, targets, reach)
+          : snapTime(pointer, targets, reach)
+      const start = mode === 'move' && snap ? snap.time : pointer - grab
+      const t = mode !== 'move' && snap ? snap.time : pointer
+      setSnapLine(snap ? snap.target : null)
       let next: Draft
       if (group) {
-        next = moveSegments(base, state.selectedIds, segment.id, t - grab)
+        next = moveSegments(base, state.selectedIds, segment.id, start)
       } else if (link) {
-        next = moveLinked(base, segment.id, t - grab)
+        next = moveLinked(base, segment.id, start)
       } else if (mode === 'move') {
         // The row is picked by height alone: looked up just inside the lanes,
         // so a drag that strays over the track names still finds its track.
@@ -183,7 +216,7 @@ export function Timeline() {
           ?.closest<HTMLElement>('[data-track-id]')
         // Only tracks of the same type accept the clip; otherwise it stays put.
         const toTrack = row?.dataset.trackType === track.type ? row.dataset.trackId : undefined
-        next = moveSegment(base, segment.id, t - grab, toTrack)
+        next = moveSegment(base, segment.id, start, toTrack)
       } else {
         next = trimSegment(base, segment.id, mode, t)
       }
@@ -198,8 +231,40 @@ export function Timeline() {
     const stop = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
+      setSnapLine(null)
       // A plain click on one clip of a group, with no drag, selects just it.
       if (group && !dragged) useEditor.getState().selectMany(own)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+  }
+
+  // Dragging an end of the export range on the ruler moves that end. It snaps
+  // like a clip edge does, and the whole drag is one undo step.
+  const startRangeDrag = (e: ReactPointerEvent, edge: 'start' | 'end') => {
+    e.stopPropagation()
+    e.preventDefault()
+    const editor = useEditor.getState()
+    const base = editor.draft
+    const targets = editor.snapping ? snapTargets(base, editor.playhead, []) : []
+    const reach = SNAP_PIXELS / pxPerUs
+    let checkpointed = false
+
+    const move = (ev: PointerEvent) => {
+      if (!checkpointed && Math.abs(ev.clientX - e.clientX) <= 3) return
+      const state = useEditor.getState()
+      const snap = snapTime(timeAt(ev.clientX), targets, reach)
+      setSnapLine(snap ? snap.target : null)
+      if (!checkpointed) {
+        state.checkpoint()
+        checkpointed = true
+      }
+      state.preview(moveRangeEdge(base, edge, snap ? snap.time : timeAt(ev.clientX)))
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      setSnapLine(null)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', stop)
@@ -311,6 +376,25 @@ export function Timeline() {
         >
           Ripple delete
         </button>
+        <span className="divider" />
+        <button type="button" title="Copy (Ctrl+C)" onClick={copySelected} disabled={selectedIds.length === 0}>
+          Copy
+        </button>
+        <button type="button" title="Cut (Ctrl+X)" onClick={cutSelected} disabled={selectedIds.length === 0}>
+          Cut
+        </button>
+        <button type="button" title="Paste at the playhead (Ctrl+V)" onClick={paste} disabled={!canPaste}>
+          Paste
+        </button>
+        <button
+          type="button"
+          title="Duplicate the selection after itself (Ctrl+D)"
+          onClick={duplicateSelected}
+          disabled={selectedIds.length === 0}
+        >
+          Duplicate
+        </button>
+        <span className="divider" />
         <button
           type="button"
           className={magnet ? 'toggle on' : 'toggle'}
@@ -319,6 +403,23 @@ export function Timeline() {
           onClick={() => commit(setMagnet(useEditor.getState().draft, !magnet))}
         >
           Magnet
+        </button>
+        <span className="divider" />
+        <button
+          type="button"
+          title="Add a marker at the playhead, or remove the one there (M). It goes on the selected clip if the playhead is on it."
+          onClick={toggleMarkerAtPlayhead}
+        >
+          Marker
+        </button>
+        <button
+          type="button"
+          className={snapping ? 'toggle on' : 'toggle'}
+          aria-pressed={snapping}
+          title="Snap dragged clips to the playhead, markers and other clips (N)"
+          onClick={toggleSnapping}
+        >
+          Snap
         </button>
         <span className="divider" />
         <button type="button" onClick={addTextAtPlayhead}>
@@ -350,13 +451,37 @@ export function Timeline() {
               {hasExportRange(draft) && (
                 <span
                   className="export-range"
-                  title="Export range"
                   style={{
                     left: effectiveRange(draft).start * pxPerUs,
                     width: effectiveRange(draft).duration * pxPerUs,
                   }}
-                />
+                >
+                  <span
+                    className="range-handle range-handle-start"
+                    title="Export range start: drag to move it"
+                    onPointerDown={(e) => startRangeDrag(e, 'start')}
+                  />
+                  <span
+                    className="range-handle range-handle-end"
+                    title="Export range end: drag to move it"
+                    onPointerDown={(e) => startRangeDrag(e, 'end')}
+                  />
+                </span>
               )}
+              {draft.time_marks.map((m) => (
+                <span
+                  key={m.id}
+                  className="marker"
+                  title={`${m.title}: click to go to it, double-click to remove it`}
+                  style={{ left: m.time_range.start * pxPerUs, background: m.color }}
+                  onPointerDown={(e) => {
+                    e.stopPropagation()
+                    useEditor.getState().setPlaying(false)
+                    setPlayhead(m.time_range.start)
+                  }}
+                  onDoubleClick={() => commit(removeMarker(useEditor.getState().draft, m.id))}
+                />
+              ))}
               {ticks.map((s) => (
                 <span key={s} className="tick" style={{ left: s * pxPerSec }}>
                   {tickLabel(s)}
@@ -400,6 +525,7 @@ export function Timeline() {
                   const offline =
                     material !== null && material.type !== 'text' && !assets[assetKey(material.path)]
                   const fade = effectiveFade(segment)
+                  const animated = effectiveAnimations(segment)
                   const transition = effectiveTransition(track, index)
                   const asset =
                     material !== null && material.type !== 'text'
@@ -450,13 +576,29 @@ export function Timeline() {
                           style={{ width: fade.fade_out_duration * pxPerUs }}
                         />
                       )}
+                      {animated.in && (
+                        <span
+                          className="anim anim-in"
+                          title={`In: ${animated.in.name}`}
+                          style={{ width: animated.in.duration * pxPerUs }}
+                        />
+                      )}
+                      {animated.out && (
+                        <span
+                          className="anim anim-out"
+                          title={`Out: ${animated.out.name}`}
+                          style={{ width: animated.out.duration * pxPerUs }}
+                        />
+                      )}
                       <span
                         className="handle handle-start"
                         onPointerDown={(e) => startDrag(e, track, segment, 'start')}
                       />
                       <span className="clip-label">
                         {segmentLabel(draft, segment)}
-                        {segment.speed !== 1 && ` · ${Number(segment.speed.toFixed(2))}×`}
+                        {segment.curve_speed
+                          ? ' · ramp'
+                          : segment.speed !== 1 && ` · ${Number(segment.speed.toFixed(2))}×`}
                         {segment.reverse && ' · reversed'}
                         {segment.freeze && ' · freeze'}
                       </span>
@@ -467,6 +609,25 @@ export function Timeline() {
                           style={{ width: ((transition.to - transition.from) / 2) * pxPerUs }}
                         />
                       )}
+                      {clipMarkers(segment).map(({ marker, time }) => (
+                        <span
+                          key={marker.id}
+                          className="clip-marker"
+                          title={`${marker.title}: click to go to it, double-click to remove it`}
+                          style={{
+                            left: (time - segment.target_timerange.start) * pxPerUs,
+                            background: marker.color,
+                          }}
+                          onPointerDown={(e) => {
+                            e.stopPropagation()
+                            useEditor.getState().setPlaying(false)
+                            setPlayhead(time)
+                          }}
+                          onDoubleClick={() =>
+                            commit(removeMarker(useEditor.getState().draft, marker.id))
+                          }
+                        />
+                      ))}
                       {keyframeTimes(segment)
                         .filter(
                           (t) =>
@@ -494,6 +655,9 @@ export function Timeline() {
             </div>
           ))}
           <Playhead pxPerUs={pxPerUs} />
+          {snapLine !== null && (
+            <div className="snap-line" style={{ left: HEADER_WIDTH + snapLine * pxPerUs }} />
+          )}
           {marquee && (
             <div
               className="marquee"
