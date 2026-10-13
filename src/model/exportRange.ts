@@ -61,6 +61,17 @@ export function markOut(draft: Draft, t: number): Draft {
   return setExportRange(draft, t > current.start ? current.start : 0, t)
 }
 
+// Moves one end of the range to `t`, as dragging it does: unlike markIn and
+// markOut it stops a frame short of the other end and never jumps past it.
+export function moveRangeEdge(draft: Draft, edge: 'start' | 'end', t: number): Draft {
+  const current = effectiveRange(draft)
+  const end = current.start + current.duration
+  const frame = frameDuration(draft.fps)
+  return edge === 'start'
+    ? setExportRange(draft, Math.min(t, end - frame), end)
+    : setExportRange(draft, current.start, Math.max(t, current.start + frame))
+}
+
 // Marks the stretch the given clips cover, first start to last end.
 export function markSegments(draft: Draft, segmentIds: string[]): Draft {
   const picked = draft.tracks.flatMap((t) => t.segments).filter((s) => segmentIds.includes(s.id))

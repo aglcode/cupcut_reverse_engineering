@@ -7,6 +7,7 @@ import {
   type ExportCodec,
   type ExportResult,
 } from '../engine/exporter'
+import { canPickExportFile, openExportFile, pickExportFile } from '../engine/exportFile'
 import { missingMedia } from '../engine/media'
 import { effectiveRange, hasExportRange } from '../model/exportRange'
 import { formatTimecode } from '../model/time'
@@ -21,7 +22,14 @@ const even = (n: number): number => Math.max(2, Math.round(n / 2) * 2)
 type Status =
   | { step: 'idle' }
   | { step: 'running'; progress: number }
-  | { step: 'done'; url: string; result: ExportResult }
+  | {
+      step: 'done'
+      url: string
+      result: ExportResult
+      bytes: number
+      // Name of the file the user picked, when the export went straight to it.
+      savedAs: string | null
+    }
   | { step: 'error'; message: string }
 
 export function ExportDialog({ onClose }: { onClose: () => void }) {
@@ -65,11 +73,28 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     }
   }, [width, outHeight])
 
-  const start = async () => {
+  // `pick` asks where to save and writes straight there; otherwise the export
+  // goes to the browser's own store and is offered as a download.
+  const start = async (pick: boolean) => {
+    // The save dialog has to be the first thing the click leads to.
+    let file = null
+    if (pick) {
+      try {
+        file = await pickExportFile(draft.name)
+      } catch (error) {
+        setStatus({ step: 'error', message: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      // Backed out of the dialog.
+      if (!file) return
+    }
     useEditor.getState().setPlaying(false)
     const controller = new AbortController()
     abort.current = controller
     setStatus({ step: 'running', progress: 0 })
+    // Written to disk as it is encoded where the browser allows, so a long
+    // export does not have to fit in memory.
+    file ??= await openExportFile(draft.name)
     try {
       const result = await exportDraft(
         draft,
@@ -82,18 +107,29 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           audioBitrate: 192_000,
           codec,
           range,
+          writable: file?.writable,
         },
         (progress) => setStatus({ step: 'running', progress }),
         controller.signal,
       )
-      setStatus({ step: 'done', url: URL.createObjectURL(result.blob), result })
+      const finished = file ? await file.finish() : result.blob
+      if (!finished) throw new Error('The encoder produced no output')
+      setStatus({
+        step: 'done',
+        url: URL.createObjectURL(finished),
+        result,
+        bytes: finished.size,
+        savedAs: file?.picked ? file.name : null,
+      })
     } catch (error) {
+      await file?.discard()
       if (controller.signal.aborted) setStatus({ step: 'idle' })
       else setStatus({ step: 'error', message: error instanceof Error ? error.message : String(error) })
     }
   }
 
   const running = status.step === 'running'
+  const canExport = range.duration > 0 && missing.length === 0 && bitrate > 0
 
   return (
     <div className="modal-backdrop">
@@ -191,11 +227,17 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         )}
         {status.step === 'done' && (
           <p className="notice">
-            Done: {(status.result.blob.size / 1_000_000).toFixed(1)} MB, {status.result.videoCodec}
-            {status.result.audioCodec ? ` + ${status.result.audioCodec}` : ', no audio'}.{' '}
-            <a href={status.url} download={`${draft.name || 'export'}.mp4`}>
-              Download
-            </a>
+            {status.savedAs ? `Saved to ${status.savedAs}` : 'Done'}:{' '}
+            {(status.bytes / 1_000_000).toFixed(1)} MB, {status.result.videoCodec}
+            {status.result.audioCodec ? ` + ${status.result.audioCodec}` : ', no audio'}.
+            {!status.savedAs && (
+              <>
+                {' '}
+                <a href={status.url} download={`${draft.name || 'export'}.mp4`}>
+                  Download
+                </a>
+              </>
+            )}
           </p>
         )}
 
@@ -209,11 +251,21 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
               <button type="button" onClick={onClose}>
                 Close
               </button>
+              {canPickExportFile() && (
+                <button
+                  type="button"
+                  disabled={!canExport}
+                  title="Choose where to save, and write the video straight there"
+                  onClick={() => void start(true)}
+                >
+                  Export to file…
+                </button>
+              )}
               <button
                 type="button"
                 className="primary"
-                disabled={range.duration === 0 || missing.length > 0 || !(bitrate > 0)}
-                onClick={() => void start()}
+                disabled={!canExport}
+                onClick={() => void start(false)}
               >
                 Export
               </button>

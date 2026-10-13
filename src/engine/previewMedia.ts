@@ -34,7 +34,7 @@ export class PreviewMedia {
       wanted.set(layer.segment.id, {
         path: layer.material.path,
         sourceUs: layer.sourceUs,
-        speed: layer.segment.speed,
+        speed: layer.speed,
         volume: 0,
         seekOnly: layer.segment.reverse || layer.segment.freeze,
       })
@@ -43,7 +43,7 @@ export class PreviewMedia {
       wanted.set(layer.segment.id, {
         path: layer.path,
         sourceUs: layer.sourceUs,
-        speed: layer.segment.speed,
+        speed: layer.speed,
         // Reversed sound cannot be previewed this way; it is in the export.
         volume: layer.segment.reverse ? 0 : layer.volume,
         seekOnly: layer.segment.reverse,

@@ -19,6 +19,10 @@ Needs a Chromium-based browser (WebCodecs is used for export).
 - Video, audio and text tracks; import video, audio and images.
 - Move, trim, split and delete clips with frame snapping; clips never overlap on a track.
 - Constant speed, volume, scale, position, rotation and opacity per clip.
+- Speed ramps: CapCut's Hero and Bullet curves or your own, edited on a graph.
+- In and out animations on clips and titles: fade, slide and zoom.
+- Masks on a clip's picture: Split, Mirror, Circle or Rectangle, with a soft
+  edge, round corners and invert. Every mask setting can be keyframed.
 - Keyframes for position, scale, rotation, opacity and volume, with Linear, Ease
   in, Ease out or Ease in-out between them. Drag a keyframe on its clip to move it.
 - Audio fade in and fade out per clip.
@@ -27,6 +31,8 @@ Needs a Chromium-based browser (WebCodecs is used for export).
 - Thumbnails on video and photo clips and waveforms on audio clips.
 - Reverse a video clip (picture and sound), and freeze the frame under the
   playhead as a still.
+- Colour adjustment per clip: brightness, contrast and saturation, which can be
+  keyframed.
 - Frame background per clip: a colour, or the clip's own picture blurred, behind
   a clip that does not fill the frame.
 - Text styling: system fonts, bold, italic, underline, alignment, letter and line
@@ -43,16 +49,26 @@ Needs a Chromium-based browser (WebCodecs is used for export).
 - Ripple delete (Shift+Delete) closes the gap on any other track.
 - The project autosaves, and it and its media are kept in the browser's storage
   and restored on the next visit.
+- Markers on the timeline and on clips (M). A clip's markers stay on the same
+  moment of its footage when it is moved, trimmed or retimed.
+- Snapping (N to switch off): a clip dragged or trimmed near the playhead, a
+  marker or another clip's edge jumps onto it.
+- Copy, cut, paste and duplicate clips, including several at once and between
+  projects.
 - Undo/redo, save/open project JSON.
 - Open a CapCut `draft_content.json`: tracks, timing, transforms, text, speed,
-  keyframes, audio fades, crops, flips, transitions, text styles and canvas backgrounds are imported, media is relinked by file name, and anything unsupported is listed.
+  keyframes, speed ramps, masks, in/out animations, audio fades, crops, flips, transitions, text styles, canvas backgrounds, markers and colour adjustments are imported, media is relinked by file name, and anything unsupported is listed.
 - Export MP4 at a chosen resolution, frame rate and bitrate, as H.264, HEVC, AV1
   or VP9 (whichever this computer can encode), with AAC audio. Mark a range with
-  I and O to export only part of the timeline.
+  I and O to export only part of the timeline, and drag either end of the marked
+  range on the ruler. The file is written to disk as it is encoded, so a long or
+  4K export does not have to fit in memory; "Export to file…" writes it straight
+  to a file you pick.
 
 Shortcuts: Space play/pause, Ctrl+B split, Delete remove, Shift+Delete ripple
-delete, Ctrl+A select all,
-Escape clear selection, I / O mark the export range, Ctrl+Z / Ctrl+Shift+Z
+delete, Ctrl+C / Ctrl+X / Ctrl+V copy, cut and paste, Ctrl+D duplicate, Ctrl+A select all,
+Escape clear selection, M add or remove a marker, Shift+←/→ previous or next
+marker, N snapping on or off, I / O mark the export range, Ctrl+Z / Ctrl+Shift+Z
 undo/redo, ←/→ step one frame.
 
 ## How it maps to CapCut
@@ -62,6 +78,9 @@ undo/redo, ←/→ step one frame.
 | `draft_content.json`: `tracks[].segments[]` referencing a `materials` pool by id | `src/model/types.ts`, same field names |
 | Integer microsecond times; frame n stored as `floor(n × 1e6 / fps)` | `src/model/time.ts` |
 | `source_timerange` / `target_timerange`, with `source = target × speed` | `src/model/ops.ts` |
+| In/out animation: a `materials.material_animations` entry listing `{type: "in" \| "out" \| "loop" \| "group", name, duration}`; an out animation is placed by the clip's end, its `start` being 0 | `src/model/animations.ts`, same type, name and duration kept on the segment |
+| Mask: a `materials.common_mask` entry (`resource_type`, `config` with `width`, `height`, `centerX`, `centerY`, `rotation`, `feather`, `roundCorner`, `invert`), animated by `KFTypeCommonMask…` keyframes | `src/model/mask.ts`, same fields kept on the segment and the same keyframe names |
+| Speed ramp: `curve_speed.speed_points` on the clip's `materials.speeds` entry, x a fraction of the clip's source and y a speed; `speed` is then the average | `src/model/speedCurve.ts`, same points kept on the segment |
 | No overlap inside a track; draft duration is the last segment's end | `src/model/ops.ts` (covered by tests) |
 | `clip { scale, rotation, transform, alpha }` relative to the canvas | `src/engine/compositor.ts` |
 | Extracted audio: an audio material (`type: "extract_music"`, `name: "Extracted…"`) whose `path` is the video's own file | `extractAudio` in `src/model/ops.ts` |
@@ -72,9 +91,12 @@ undo/redo, ←/→ step one frame.
 | Text style fields on the text material (`alignment`, `border_*`, `shadow_*`, `background_*`, `letter_spacing`, `line_spacing`, `underline`) | `src/model/textStyle.ts`, same names; drawn by `src/engine/text.ts` |
 | Per-media thumbnail cache (`Cache\frameThumbnail\<media>\82x46\<µs>.png`) and waveform cache (`Cache\audioWave\<media>.waveDataV2`) | `src/engine/clipVisuals.ts`, in memory |
 | `reverse` flag on the segment | `src/model/timing.ts`, same flag; freeze frames are a `freeze` flag of this editor's own |
+| Colour adjustment as `materials.effects` entries of type `brightness`, `contrast`, `saturation`, each with a `value` from -1 to 1 | `src/model/adjust.ts`, same values kept on the segment |
 | `materials.canvases` entry (`type`, `color`, `blur`) referenced from each video clip | `src/model/background.ts`, same fields kept on the segment |
 | `materials.transitions` entry (`name`, `duration`) referenced from the outgoing clip; clips stay adjacent on the timeline | `src/model/transitions.ts`, kept on the outgoing segment |
 | `materials.audio_fades` entry (`fade_in_duration`, `fade_out_duration`) referenced from the segment | `src/model/fades.ts`, same fields kept on the segment |
+| Clip markers: `mark_items` (`title`, `color`, `time_range.start`) in a `materials.time_marks` entry the clip references, in the clip's source time | `src/model/markers.ts`, same items kept on the segment |
+| Auto snap (`auto_adsorb`); video cuts sit exactly on beat markers | `src/model/snap.ts` |
 | `config.export_range`, with engine operations `export_range_in`, `_out`, `_cancel`, `_by_segment` | `src/model/exportRange.ts` |
 | GPU compositing, then a hardware encoder and MP4 mux through FFmpeg | `src/engine/exporter.ts`: Canvas compositing, WebCodecs encode, mediabunny mux |
 
@@ -91,11 +113,43 @@ in this browser's IndexedDB (`src/engine/persistence.ts`). That means:
 - Only the current project is kept. Use Save to keep others as files; opening
   one relinks its media by file name.
 
+An export is written, as it is encoded, to this site's private file store in the
+browser (`src/engine/exportFile.ts`), and the Download link then copies it to
+where you choose. Only the latest export is kept there, a cancelled one is
+removed, and it counts against the same storage quota. Sound is decoded and
+mixed ten seconds at a time (`src/engine/audioSources.ts`,
+`src/engine/audioMix.ts`). Where the browser has no private file store, the
+export is built in memory as before. A file written to disk has its index at
+the end; it plays normally but starts more slowly if streamed from a web server.
+
+"Export to file…" (Chromium browsers) skips that store: it asks where to save
+and writes there directly, so the video is on disk once, not twice. The chosen
+file only takes its new contents when the export finishes, so cancelling leaves
+an existing file as it was; a newly named one is left empty.
+
 ## Not implemented
 
-Effects, filters, in/out animations, masks, speed ramps (imported
-at their average speed), a curve editor for custom keyframe easing, compound
+Effects, filters, loop and combo animations, a curve editor for custom keyframe easing, compound
 clips, and writing drafts back to CapCut. See `TASK_PROGRESS.md` for the full list.
+
+How a speed ramp maps to time is worked out from CapCut's drafts, not read
+from them: taking each point as a place in the clip's source, with speed
+changing steadily over time between points, gives the timeline length of all 62
+ramped clips in the local drafts to within a frame. Hero and Bullet are CapCut's
+curves as found; the other presets are this editor's own. A ramp on a reversed
+clip is assumed to run in playing order. While playing, the preview can trail a
+steep ramp by about a third of a second; paused frames and the export are exact.
+
+Animation looks are original, not CapCut's: only its Fade In and Fade Out have
+an equivalent, and any other imported in or out animation becomes a fade of the
+same length. How the motion eases is this editor's own.
+
+Masks keep CapCut's fields and keyframe names, and size is confirmed as a share
+of the picture's width and height. The two masked clips in the local drafts (a
+Mirror and a Split) leave everything else at zero, so the centre's units, the
+direction of rotation, how soft a given feather is, and which side of a Split
+shows are this editor's own. The shapes are drawn here, not with CapCut's mask
+resources, and any other kind of mask is reported and left out on import.
 
 Audio fades are linear and measured in timeline time. No local CapCut draft
 uses a fade, so CapCut's actual curve and time base are unconfirmed.
@@ -107,6 +161,16 @@ transition window is centred on the cut, which is an assumption.
 Of the easing presets only Ease In is confirmed against CapCut: it is the only
 eased kind in the drafts inspected. Ease out and Ease in-out mirror its handle.
 
+Where pasted clips land is this editor's own design: clips from one track stay
+together, on the track they came from if there is room, otherwise another or a
+new one; with the magnet on, main-track clips are slotted in at the nearest cut.
+CapCut has copy, cut, paste and duplicate, but a draft does not show its rules.
+
+Markers on a clip follow CapCut exactly, including their time base. Markers on
+the timeline itself and the details of snapping (what it snaps to, and from how
+far) are this editor's own: CapCut's timeline-level `time_marks` is null in
+every draft inspected, and its snap settings are not stored in a draft.
+
 Linking is this editor's own design. CapCut drafts store no connection between
 an extracted clip and its video; the `group_id` field used here for links is
 empty in every draft inspected, so what CapCut uses it for is not known.
@@ -115,6 +179,12 @@ Reverse follows CapCut's `reverse` flag in name only: no local draft has a
 reversed clip, and CapCut renders a separate reversed copy of the file, so which
 part of the source it plays is unconfirmed. Reversed clips preview without
 sound; the sound is in the export.
+
+Colour adjustment uses CapCut's three values and their -1 to 1 range, and -1
+saturation gives a grey picture as CapCut's value implies. How strong brightness
+and contrast are is this editor's own (each from half to one and a half times
+normal): CapCut draws them with a shader bundle, and the one adjusted clip in
+the drafts inspected has both at 0.
 
 Canvas backgrounds follow CapCut's field names only: no local draft sets one,
 so the scale of the blur value is this editor's own, and image backgrounds are

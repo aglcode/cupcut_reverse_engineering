@@ -15,9 +15,12 @@ import {
 } from '../engine/persistence'
 import { isActive } from '../engine/resolve'
 import { openProject } from '../model/capcutImport'
+import { copySegments, duplicateSegments, type Clipboard } from '../model/clipboard'
+import { neighbourMarker, toggleMarker } from '../model/markers'
 import {
   addMedia,
   addText,
+  pasteSegments,
   removeSegments,
   rippleDelete,
   setMagnet,
@@ -42,7 +45,12 @@ type State = {
   selectedIds: string[]
   selectedId: string | null
   pxPerSec: number
+  // Whether dragged clips snap to the playhead, markers and other clips.
+  snapping: boolean
   warnings: string[]
+  // What Copy or Cut last took. It is kept across New and Open, so clips can
+  // be carried from one project to another, but not across a page reload.
+  clipboard: Clipboard | null
   // True until the last session's project and media have been put back.
   restoring: boolean
   // Files that could not be kept for next time, usually for lack of space.
@@ -66,6 +74,13 @@ type State = {
   selectMany: (segmentIds: string[]) => void
   selectAll: () => void
   setZoom: (pxPerSec: number) => void
+  toggleSnapping: () => void
+  // Adds a marker at the playhead, or removes the one there. It goes on the
+  // selected clip when exactly one is selected and the playhead is on it,
+  // otherwise on the timeline.
+  toggleMarkerAtPlayhead: () => void
+  // Moves the playhead to the next (1) or previous (-1) marker.
+  jumpToMarker: (direction: 1 | -1) => void
   dismissWarnings: () => void
 
   // Returns the names of files that could not be read. Files are also copied
@@ -80,6 +95,12 @@ type State = {
   addTextAtPlayhead: () => void
   splitAtPlayhead: () => void
   deleteSelected: () => void
+  copySelected: () => void
+  cutSelected: () => void
+  // Pastes at the playhead and selects what was pasted.
+  paste: () => void
+  // Copies the selection to just after itself and selects the copy.
+  duplicateSelected: () => void
   // Deletes the selection and closes the gaps it leaves on each track.
   rippleDeleteSelected: () => void
   loadProject: (text: string) => void
@@ -123,6 +144,12 @@ const selection = (ids: string[]) => ({
   selectedId: ids.length > 0 ? ids[ids.length - 1] : null,
 })
 
+// The selection, less any clips that undo or redo has just taken away.
+function stillThere(draft: Draft, ids: string[]) {
+  const present = new Set(draft.tracks.flatMap((t) => t.segments.map((s) => s.id)))
+  return selection(ids.filter((id) => present.has(id)))
+}
+
 export const useEditor = create<State>((set, get) => ({
   draft: newDraft(),
   past: [],
@@ -133,7 +160,9 @@ export const useEditor = create<State>((set, get) => ({
   selectedIds: [],
   selectedId: null,
   pxPerSec: 80,
+  snapping: true,
   warnings: [],
+  clipboard: null,
   restoring: true,
   unsaved: [],
   projectSaved: true,
@@ -152,12 +181,23 @@ export const useEditor = create<State>((set, get) => ({
   undo: () => {
     const { draft, past, future } = get()
     if (past.length === 0) return
-    set({ draft: past[past.length - 1], past: past.slice(0, -1), future: [draft, ...future] })
+    const restored = past[past.length - 1]
+    set({
+      draft: restored,
+      past: past.slice(0, -1),
+      future: [draft, ...future],
+      ...stillThere(restored, get().selectedIds),
+    })
   },
   redo: () => {
     const { draft, past, future } = get()
     if (future.length === 0) return
-    set({ draft: future[0], past: [...past, draft], future: future.slice(1) })
+    set({
+      draft: future[0],
+      past: [...past, draft],
+      future: future.slice(1),
+      ...stillThere(future[0], get().selectedIds),
+    })
   },
 
   setPlayhead: (us) => set({ playhead: Math.max(0, us) }),
@@ -183,6 +223,16 @@ export const useEditor = create<State>((set, get) => ({
   selectAll: () =>
     set(selection(get().draft.tracks.flatMap((t) => t.segments.map((s) => s.id)))),
   setZoom: (pxPerSec) => set({ pxPerSec: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, pxPerSec)) }),
+  toggleSnapping: () => set({ snapping: !get().snapping }),
+  toggleMarkerAtPlayhead: () => {
+    const { draft, playhead, selectedIds, commit } = get()
+    commit(toggleMarker(draft, playhead, selectedIds.length === 1 ? selectedIds[0] : null))
+  },
+  jumpToMarker: (direction) => {
+    const { draft, playhead } = get()
+    const time = neighbourMarker(draft, snapToFrame(playhead, draft.fps), direction)
+    if (time !== null) set({ playhead: time, playing: false })
+  },
   dismissWarnings: () => set({ warnings: [] }),
 
   importFiles: async (files, keep = true) => {
@@ -283,6 +333,37 @@ export const useEditor = create<State>((set, get) => ({
     if (selectedIds.length === 0) return
     commit(removeSegments(draft, selectedIds))
     set(selection([]))
+  },
+
+  copySelected: () => {
+    const { draft, selectedIds } = get()
+    const copied = copySegments(draft, selectedIds)
+    if (copied) set({ clipboard: copied })
+  },
+
+  cutSelected: () => {
+    const { draft, selectedIds, commit } = get()
+    const copied = copySegments(draft, selectedIds)
+    if (!copied) return
+    set({ clipboard: copied })
+    commit(removeSegments(draft, selectedIds))
+    set(selection([]))
+  },
+
+  paste: () => {
+    const { draft, clipboard, playhead, commit } = get()
+    const pasted = clipboard && pasteSegments(draft, clipboard, playhead)
+    if (!pasted) return
+    commit(pasted.draft)
+    set(selection(pasted.segmentIds))
+  },
+
+  duplicateSelected: () => {
+    const { draft, selectedIds, commit } = get()
+    const made = duplicateSegments(draft, selectedIds)
+    if (!made) return
+    commit(made.draft)
+    set(selection(made.segmentIds))
   },
 
   rippleDeleteSelected: () => {

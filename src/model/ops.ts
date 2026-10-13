@@ -7,11 +7,17 @@
 //   - draft.duration == the end of the last segment
 
 import { splitFade } from './fades'
+import { evalAdjust, NO_ADJUST } from './adjust'
+import { splitAnimations } from './animations'
+import { evalMask } from './mask'
+import type { Clipboard } from './clipboard'
 import { evalClip, isAnimated, shiftKeyframes } from './keyframes'
 import { linkedIds } from './links'
+import { shiftMarkers } from './markers'
 import { DEFAULT_TEXT_STYLE } from './textStyle'
 import { frameDuration, frameToUs, snapToFrame, US_PER_SEC, usToFrame } from './time'
-import { sourceTimeAt, usesSourceTime } from './timing'
+import { averageSpeed, cleanPoints, progressAt, sliceCurve } from './speedCurve'
+import { fitSpeed, playedAt, sourceTimeAt, speedAtTime, usesSourceTime } from './timing'
 import {
   DEFAULT_CLIP,
   newId,
@@ -25,6 +31,7 @@ import {
   type Track,
   type TrackType,
   type VideoMaterial,
+  type SpeedCurve,
 } from './types'
 
 export const MIN_SPEED = 0.1
@@ -83,7 +90,7 @@ function placeAt(segment: Segment, start: number, fps: number): Segment {
   const duration = frameToUs(first + count, fps) - placed
   const change = duration - segment.target_timerange.duration
   const src = segment.source_timerange
-  return {
+  return fitSpeed({
     ...segment,
     target_timerange: { start: placed, duration },
     // The source range follows by the same microsecond or so, to keep
@@ -98,7 +105,7 @@ function placeAt(segment: Segment, start: number, fps: number): Segment {
             ),
           }
         : src,
-  }
+  })
 }
 
 type FrameSpan = { from: number; to: number }
@@ -327,6 +334,7 @@ export function addMedia(
     source_timerange: { start: 0, duration },
     target_timerange: { start, duration },
     speed: 1,
+    curve_speed: null,
     volume: 1,
     clip: isAudio ? null : structuredClone(DEFAULT_CLIP),
     visible: true,
@@ -337,6 +345,10 @@ export function addMedia(
     reverse: false,
     freeze: false,
     group_id: '',
+    time_marks: [],
+    adjust: { ...NO_ADJUST },
+    mask: null,
+    animations: [],
   }
   const materials = isAudio
     ? { ...room.draft.materials, audios: [...room.draft.materials.audios, material] }
@@ -374,6 +386,7 @@ export function addText(draft: Draft, content: string, at: number): AddResult {
     source_timerange: null,
     target_timerange: { start, duration },
     speed: 1,
+    curve_speed: null,
     volume: 1,
     clip: structuredClone(DEFAULT_CLIP),
     visible: true,
@@ -384,6 +397,10 @@ export function addText(draft: Draft, content: string, at: number): AddResult {
     reverse: false,
     freeze: false,
     group_id: '',
+    time_marks: [],
+    adjust: { ...NO_ADJUST },
+    mask: null,
+    animations: [],
   }
   const materials = { ...room.draft.materials, texts: [...room.draft.materials.texts, material] }
   return {
@@ -580,6 +597,7 @@ export function extractAudio(draft: Draft, segmentId: string): AddResult | null 
     source_timerange: { ...src },
     target_timerange: { start, duration },
     speed: segment.speed,
+    curve_speed: structuredClone(segment.curve_speed),
     volume: segment.volume,
     clip: null,
     visible: true,
@@ -592,6 +610,10 @@ export function extractAudio(draft: Draft, segmentId: string): AddResult | null 
     reverse: segment.reverse,
     freeze: false,
     group_id: groupId,
+    time_marks: [],
+    adjust: { ...NO_ADJUST },
+    mask: null,
+    animations: [],
   }
   const silent: Segment = {
     ...segment,
@@ -611,6 +633,132 @@ export function extractAudio(draft: Draft, segmentId: string): AddResult | null 
   }))
   const materials = { ...draft.materials, audios: [...draft.materials.audios, audio] }
   return { draft: finalize({ ...room.draft, materials }, tracks), segmentId: extracted.id }
+}
+
+// Pastes copied clips at `at`, keeping their spacing. Each clip gets new ids
+// and its own copy of its material, and links among the copied clips become
+// links among the pasted ones.
+//
+// Where they go: clips that shared a track stay together on one track. That
+// is the track they came from if they fit there without overlapping anything,
+// else another track of the same kind where they fit, else a new track.
+// With the magnet on, clips copied from the main track are instead slotted
+// into the main track at the cut nearest `at`, pushing later clips along, and
+// the rest of the paste is lined up with where the first of them lands.
+export function pasteSegments(
+  draft: Draft,
+  clipboard: Clipboard,
+  at: number,
+): { draft: Draft; segmentIds: string[] } | null {
+  if (clipboard.items.length === 0) return null
+  const fps = draft.fps
+  const mainId = draft.config.maintrack_adsorb ? draft.tracks[mainTrackIndex(draft)]?.id : undefined
+  const mainTrack = draft.tracks.find((t) => t.id === mainId)
+  const intoMain = (item: Clipboard['items'][number]) =>
+    mainTrack !== undefined && item.fromMain && item.trackType === 'video'
+
+  // How far everything moves in time.
+  let shift = snapToFrame(at, fps) - clipboard.origin
+  const mainStarts = clipboard.items.filter(intoMain).map((i) => i.segment.target_timerange.start)
+  let slot = 0
+  if (mainTrack && mainStarts.length > 0) {
+    slot = slotStart(mainTrack.segments, snapToFrame(at, fps))
+    shift = slot - Math.min(...mainStarts)
+  }
+
+  // Fresh copies. Group ids are remapped so pasted clips link to each other.
+  const groups = new Map<string, string>()
+  const copies = clipboard.items.map((item) => {
+    const material = { ...structuredClone(item.material), id: newId() }
+    const source = item.segment
+    let group = ''
+    if (source.group_id) {
+      group = groups.get(source.group_id) ?? newId()
+      groups.set(source.group_id, group)
+    }
+    const segment: Segment = {
+      ...structuredClone(source),
+      id: newId(),
+      material_id: material.id,
+      group_id: group,
+      time_marks: source.time_marks.map((m) => ({ ...m, id: newId() })),
+      common_keyframes: source.common_keyframes.map((k) => ({
+        ...k,
+        id: newId(),
+        keyframe_list: k.keyframe_list.map((f) => ({ ...f, id: newId() })),
+      })),
+      target_timerange: {
+        start: Math.max(0, source.target_timerange.start + shift),
+        duration: source.target_timerange.duration,
+      },
+    }
+    return { item, material, segment }
+  })
+  // A link needs at least two clips; one copied without its partner stands alone.
+  for (const { segment } of copies) {
+    if (segment.group_id && copies.filter((c) => c.segment.group_id === segment.group_id).length < 2) {
+      segment.group_id = ''
+    }
+  }
+
+  let working: Draft = {
+    ...draft,
+    materials: {
+      videos: [...draft.materials.videos, ...copies.flatMap((c) => (c.material.type === 'video' || c.material.type === 'photo' ? [c.material] : []))],
+      audios: [...draft.materials.audios, ...copies.flatMap((c) => (c.material.type === 'audio' ? [c.material] : []))],
+      texts: [...draft.materials.texts, ...copies.flatMap((c) => (c.material.type === 'text' ? [c.material] : []))],
+    },
+  }
+
+  // Main-track clips all start at the slot, in their copied order, ahead of
+  // the clip already there; finalize then packs them out along the track.
+  const forMain = copies
+    .filter((c) => intoMain(c.item))
+    .sort((a, b) => a.item.segment.target_timerange.start - b.item.segment.target_timerange.start)
+    .map((c) => ({ ...c.segment, target_timerange: { ...c.segment.target_timerange, start: slot } }))
+  if (forMain.length > 0) {
+    working = {
+      ...working,
+      tracks: working.tracks.map((t) =>
+        t.id === mainId ? { ...t, segments: [...forMain, ...t.segments] } : t,
+      ),
+    }
+  }
+
+  // Everything else, one source track at a time.
+  const lanes = new Map<string, typeof copies>()
+  for (const copy of copies) {
+    if (intoMain(copy.item)) continue
+    lanes.set(copy.item.lane, [...(lanes.get(copy.item.lane) ?? []), copy])
+  }
+  for (const [lane, group] of lanes) {
+    const type = group[0].item.trackType
+    const placed = group.map((c) => placeAt(c.segment, c.segment.target_timerange.start, fps))
+    const spans = placed.map((s) => frameSpan(s, fps))
+    const fits = (track: Track) =>
+      track.type === type &&
+      track.id !== mainId &&
+      !track.segments.some((s) => spans.some((span) => spansOverlap(span, frameSpan(s, fps))))
+    const home = working.tracks.find((t) => t.id === lane)
+    let target = home && fits(home) ? home : working.tracks.find(fits)
+    if (!target) {
+      working = addTrack(working, type)
+      // addTrack puts a new audio track first and any other last.
+      target = type === 'audio' ? working.tracks[0] : working.tracks[working.tracks.length - 1]
+    }
+    const targetId = target.id
+    working = {
+      ...working,
+      tracks: working.tracks.map((t) =>
+        t.id === targetId ? { ...t, segments: [...t.segments, ...placed] } : t,
+      ),
+    }
+  }
+
+  return {
+    draft: finalize(working, working.tracks),
+    segmentIds: copies.map((c) => c.segment.id),
+  }
 }
 
 // Removes several segments in one step.
@@ -653,7 +801,9 @@ export function trimSegment(
   const room =
     !src || limit === null
       ? Infinity
-      : (sourceSide === 'start' ? src.start : limit - src.start - src.duration) / segment.speed
+      : (sourceSide === 'start' ? src.start : limit - src.start - src.duration) /
+        // A ramped clip grows at the speed it has at that edge.
+        speedAtTime(segment, edge === 'start' ? start : end)
 
   let newStart = start
   let newEnd = end
@@ -675,7 +825,24 @@ export function trimSegment(
 
   const newDuration = newEnd - newStart
   let source = src
-  if (src) {
+  let curve = segment.curve_speed
+  if (src && curve && !segment.freeze) {
+    // A ramped clip goes on playing the part that is kept exactly as it did,
+    // so the new source range is read off the ramp and the ramp cut to match.
+    const a = sourceTimeAt(segment, newStart)
+    const b = sourceTimeAt(segment, newEnd)
+    const first = Math.max(0, Math.round(Math.min(a, b)))
+    const last = Math.min(limit ?? Infinity, Math.round(Math.max(a, b)))
+    source = { start: first, duration: Math.max(1, last - first) }
+    curve = {
+      ...curve,
+      speed_points: sliceCurve(
+        curve.speed_points,
+        playedAt(segment, newStart - start) / src.duration,
+        playedAt(segment, newEnd - start) / src.duration,
+      ),
+    }
+  } else if (src) {
     const length = Math.round(newDuration * segment.speed)
     if (segment.freeze) {
       source = { start: src.start, duration: newDuration }
@@ -692,15 +859,20 @@ export function trimSegment(
       }
     }
   }
-  return replaceSegment(draft, loc, {
+  const trimmed: Segment = {
     ...segment,
     source_timerange: source,
     target_timerange: { start: newStart, duration: newDuration },
+    curve_speed: curve,
     // Keyframes that count from the segment start move with it.
     common_keyframes: usesSourceTime(segment)
       ? segment.common_keyframes
       : shiftKeyframes(segment.common_keyframes, start - newStart),
-  })
+    time_marks: usesSourceTime(segment)
+      ? segment.time_marks
+      : shiftMarkers(segment.time_marks, start - newStart),
+  }
+  return replaceSegment(draft, loc, fitSpeed(trimmed))
 }
 
 export function splitSegment(draft: Draft, segmentId: string, time: number): Draft {
@@ -719,7 +891,7 @@ export function splitSegment(draft: Draft, segmentId: string, time: number): Dra
     leftSource = { start: src.start, duration: t - start }
     rightSource = { start: src.start, duration: end - t }
   } else if (src) {
-    const played = Math.round((t - start) * segment.speed)
+    const played = Math.round(playedAt(segment, t - start))
     const rest = src.duration - played
     // Reversed, the earlier half on the timeline shows the later half of the source.
     leftSource = segment.reverse
@@ -734,11 +906,17 @@ export function splitSegment(draft: Draft, segmentId: string, time: number): Dra
   const text = draft.materials.texts.find((m) => m.id === segment.material_id)
   const textCopy = text ? { ...text, id: newId() } : null
   const [leftFade, rightFade] = splitFade(segment)
+  const [leftAnimations, rightAnimations] = splitAnimations(segment)
+  // Each half of a ramped clip keeps its own part of the ramp.
+  const ramp = segment.curve_speed
+  const cut = ramp && src ? playedAt(segment, t - start) / src.duration : 0
   const left: Segment = {
     ...segment,
     source_timerange: leftSource,
     target_timerange: { start, duration: t - start },
+    curve_speed: ramp && { ...ramp, speed_points: sliceCurve(ramp.speed_points, 0, cut) },
     audio_fade: leftFade,
+    animations: leftAnimations,
     // The transition is at the end of the clip, so the right half keeps it.
     transition: null,
   }
@@ -748,15 +926,20 @@ export function splitSegment(draft: Draft, segmentId: string, time: number): Dra
     material_id: textCopy ? textCopy.id : segment.material_id,
     source_timerange: rightSource,
     target_timerange: { start: t, duration: end - t },
+    curve_speed: ramp && { ...ramp, speed_points: sliceCurve(ramp.speed_points, cut, 1) },
     common_keyframes: usesSourceTime(segment)
       ? structuredClone(segment.common_keyframes)
       : shiftKeyframes(segment.common_keyframes, start - t),
+    time_marks: usesSourceTime(segment)
+      ? structuredClone(segment.time_marks)
+      : shiftMarkers(segment.time_marks, start - t),
     audio_fade: rightFade,
+    animations: rightAnimations,
     // The right half joins a new link, named after where the cut is, so that
     // linked clips cut at the same moment pair up half with half.
     group_id: segment.group_id ? `${segment.group_id}:${t}` : '',
   }
-  const next = replaceSegment(draft, loc, left, right)
+  const next = replaceSegment(draft, loc, fitSpeed(left), fitSpeed(right))
   if (!textCopy) return next
   return { ...next, materials: { ...next.materials, texts: [...next.materials.texts, textCopy] } }
 }
@@ -795,7 +978,9 @@ export function freezeFrame(
     freeze: true,
     reverse: false,
     group_id: '',
+    time_marks: [],
     speed: 1,
+    curve_speed: null,
     source_timerange: {
       start: Math.min(Math.max(0, frameAt), Math.max(0, material.duration - 1)),
       duration: hold,
@@ -803,6 +988,9 @@ export function freezeFrame(
     target_timerange: { start: t, duration: hold },
     // The still keeps the look the clip had at that moment.
     clip: structuredClone(evalClip(original, t)),
+    adjust: evalAdjust(original, t),
+    mask: evalMask(original, t),
+    animations: [],
     common_keyframes: [],
     audio_fade: null,
     transition: null,
@@ -823,7 +1011,7 @@ export function freezeFrame(
 
 // Changes playback speed, keeping the same source range and resizing the
 // segment on the timeline. If the slower clip would run into its neighbour it
-// is cut short instead.
+// is cut short instead. A speed ramp on the clip is replaced.
 export function setSpeed(draft: Draft, segmentId: string, speed: number): Draft {
   const loc = findSegment(draft, segmentId)
   if (!loc || !loc.segment.source_timerange || !Number.isFinite(speed)) return draft
@@ -831,7 +1019,7 @@ export function setSpeed(draft: Draft, segmentId: string, speed: number): Draft 
   const limit = mediaLimit(draft, segment.material_id)
   if (limit === null || segment.freeze) return draft
   const clamped = Math.min(MAX_SPEED, Math.max(MIN_SPEED, speed))
-  if (clamped === segment.speed) return draft
+  if (clamped === segment.speed && !segment.curve_speed) return draft
   const fps = draft.fps
   const src = segment.source_timerange!
   const { start } = segment.target_timerange
@@ -846,12 +1034,51 @@ export function setSpeed(draft: Draft, segmentId: string, speed: number): Draft 
   return replaceSegment(draft, loc, {
     ...segment,
     speed: clamped,
+    curve_speed: null,
     source_timerange: {
       start: src.start,
       duration: Math.min(Math.round(duration * clamped), limit - src.start),
     },
     target_timerange: { start, duration },
   })
+}
+
+// Gives a clip a speed ramp, or with null takes it away and leaves the clip at
+// its average speed. Like setSpeed, the clip keeps its source range and changes
+// length; if it would run into its neighbour it is cut short instead.
+export function setSpeedCurve(draft: Draft, segmentId: string, curve: SpeedCurve | null): Draft {
+  const loc = findSegment(draft, segmentId)
+  if (!loc || !loc.segment.source_timerange) return draft
+  const { segment, track, index } = loc
+  if (mediaLimit(draft, segment.material_id) === null || segment.freeze) return draft
+  if (!curve) {
+    return segment.curve_speed ? replaceSegment(draft, loc, { ...segment, curve_speed: null }) : draft
+  }
+  const points = cleanPoints(curve.speed_points)
+  if (!points) return draft
+  const fps = draft.fps
+  const src = segment.source_timerange!
+  const { start } = segment.target_timerange
+  const next = track.segments[index + 1]
+  const room =
+    next && !isMagnetTrack(draft, loc.trackIndex) ? next.target_timerange.start - start : Infinity
+  const full = Math.max(frameDuration(fps), floorToFrame(src.duration / averageSpeed(points), fps))
+  const duration = Math.min(full, room)
+  // Cut short, only the part of the ramp that fits is kept.
+  const kept = duration < full ? progressAt(points, duration / full) : 1
+  const length = Math.max(1, Math.round(src.duration * kept))
+  return replaceSegment(
+    draft,
+    loc,
+    fitSpeed({
+      ...segment,
+      curve_speed: { name: curve.name, speed_points: kept < 1 ? sliceCurve(points, 0, kept) : points },
+      source_timerange: segment.reverse
+        ? { start: src.start + src.duration - length, duration: length }
+        : { start: src.start, duration: length },
+      target_timerange: { start, duration },
+    }),
+  )
 }
 
 export type SegmentPatch = { volume?: number; visible?: boolean; clip?: Partial<Clip> }
@@ -908,7 +1135,7 @@ export function setCanvas(
         start: src.start,
         duration: Math.min(Math.round(duration * s.speed), (limit ?? Infinity) - src.start),
       }
-      return { ...s, source_timerange: source, target_timerange: { start, duration } }
+      return fitSpeed({ ...s, source_timerange: source, target_timerange: { start, duration } })
     })
     return { ...t, segments }
   })

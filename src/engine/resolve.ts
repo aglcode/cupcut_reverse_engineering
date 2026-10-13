@@ -1,9 +1,12 @@
 // Turns (draft, time) into the list of things on screen and audible at that
 // instant. Preview and export both go through here, so they cannot disagree.
 
+import { evalAdjust } from '../model/adjust'
+import { animateClip } from '../model/animations'
 import { fadeGain } from '../model/fades'
 import { evalClip, evalVolume, isAnimated } from '../model/keyframes'
-import { sourceTimeAt } from '../model/timing'
+import { evalMask } from '../model/mask'
+import { sourceTimeAt, speedAtTime } from '../model/timing'
 import {
   effectiveTransition,
   transitionFx,
@@ -12,8 +15,10 @@ import {
 } from '../model/transitions'
 import {
   segmentEnd,
+  type Adjust,
   type Clip,
   type Draft,
+  type Mask,
   type Segment,
   type TextMaterial,
   type VideoMaterial,
@@ -23,8 +28,12 @@ export type MediaLayer = {
   kind: 'media'
   segment: Segment
   clip: Clip
+  adjust: Adjust
+  mask: Mask | null
   material: VideoMaterial
   sourceUs: number
+  // How fast the source is playing at this instant.
+  speed: number
   // Timeline range the clip is on screen for, transitions included.
   span: { from: number; to: number }
   // Set while a transition is running.
@@ -35,7 +44,13 @@ export type VisualLayer =
   | MediaLayer
   | { kind: 'text'; segment: Segment; clip: Clip; material: TextMaterial }
 
-export type AudioLayer = { segment: Segment; path: string; sourceUs: number; volume: number }
+export type AudioLayer = {
+  segment: Segment
+  path: string
+  sourceUs: number
+  speed: number
+  volume: number
+}
 
 export type ResolvedFrame = { visual: VisualLayer[]; audio: AudioLayer[] }
 
@@ -85,7 +100,10 @@ export function resolveFrame(draft: Draft, t: number): ResolvedFrame {
       const segment = track.segments.find((s) => isActive(s, t))
       if (!segment || !segment.visible) continue
       const material = draft.materials.texts.find((m) => m.id === segment.material_id)
-      if (material) visual.push({ kind: 'text', segment, clip: evalClip(segment, t), material })
+      if (material) {
+        const clip = animateClip(segment, evalClip(segment, t), t)
+        visual.push({ kind: 'text', segment, clip, material })
+      }
       continue
     }
     // Two clips are on screen at once during a transition. Segments are in
@@ -104,9 +122,12 @@ export function resolveFrame(draft: Draft, t: number): ResolvedFrame {
       visual.push({
         kind: 'media',
         segment,
-        clip: evalClip(segment, t),
+        clip: animateClip(segment, evalClip(segment, t), t),
+        adjust: evalAdjust(segment, t),
+        mask: evalMask(segment, t),
         material,
         sourceUs: mediaSourceTime(segment, material, t),
+        speed: speedAtTime(segment, t),
         span,
         fx,
       })
@@ -118,6 +139,7 @@ export function resolveFrame(draft: Draft, t: number): ResolvedFrame {
       segment,
       path,
       sourceUs: sourceTime(segment, t),
+      speed: speedAtTime(segment, t),
       volume: evalVolume(segment, t) * fadeGain(segment, t),
     }))
   return { visual, audio }
