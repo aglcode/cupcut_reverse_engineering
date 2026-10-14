@@ -20,9 +20,25 @@ Needs a Chromium-based browser (WebCodecs is used for export).
 - Move, trim, split and delete clips with frame snapping; clips never overlap on a track.
 - Constant speed, volume, scale, position, rotation and opacity per clip.
 - Speed ramps: CapCut's Hero and Bullet curves or your own, edited on a graph.
+- Track headers with Lock, Hide track clips and Mute, as in CapCut. Tracks come
+  and go as there: drag a clip above the top track (below the bottom one, for
+  sound) to put it on a new track; a track left empty is removed.
 - In and out animations on clips and titles: fade, slide and zoom.
-- Masks on a clip's picture: Split, Mirror, Circle or Rectangle, with a soft
-  edge, round corners and invert. Every mask setting can be keyframed.
+- Masks on a clip's picture: Split, Mirror, Circle, Rectangle, Heart or Star, with a soft
+  edge, round corners and invert. Every mask setting can be keyframed, and the
+  mask can be moved, sized and turned with handles on the preview.
+- Blend modes: Darken, Multiply, Color Burn, Lighten, Screen, Color Dodge,
+  Overlay, Soft Light and Hard Light.
+- Crop on the preview with a crop box, free or held to 16:9, 9:16, 1:1, 4:3 or 3:4.
+- Compound clips: fold any clips into one, double-click it to edit inside, or
+  break it apart again.
+- Several projects kept in the browser, listed under Projects, each with its
+  own media list.
+- Adjustment layers: brightness, contrast and saturation over everything
+  beneath them for as long as they last.
+- Font files (.ttf, .otf, .woff) import like media and appear under Font; the
+  fonts installed on the computer can be listed too.
+- Drag the dots on a selected clip to change its fades and animation lengths.
 - Keyframes for position, scale, rotation, opacity and volume, with Linear, Ease
   in, Ease out or Ease in-out between them. Drag a keyframe on its clip to move it.
 - Audio fade in and fade out per clip.
@@ -103,15 +119,22 @@ undo/redo, ←/→ step one frame.
 ## Where things are stored
 
 CapCut reopens a draft by reading each file's absolute path from disk. A web
-page cannot, so the current project and a copy of every imported file are kept
-in this browser's IndexedDB (`src/engine/persistence.ts`). That means:
+page cannot, so every project and a copy of every imported file are kept in
+this browser's IndexedDB (`src/engine/persistence.ts`), and the project open
+last comes back on the next visit. Each project's entry has CapCut's draft-list
+fields (`draft_id`, `draft_name`, `tm_draft_create`, `tm_draft_modified`,
+`tm_duration`, from `root_meta_info.json`). That means:
 
 - Media is duplicated: the copies count against the browser's storage quota for
   this site, shown under the media list.
 - It is per browser and per site address. Another browser, a private window or
   a different port starts empty, and clearing site data removes it.
-- Only the current project is kept. Use Save to keep others as files; opening
-  one relinks its media by file name.
+- Each project lists its own files, as CapCut lists a draft's imported files
+  under `draft_materials` in `draft_meta_info.json`. A file shared by two
+  projects is stored once; removing it from one project only takes it out of
+  storage when no other project has it, and deleting a project clears out the
+  files nothing else has. Save keeps a project as a file too; opening one
+  relinks its media by file name.
 
 An export is written, as it is encoded, to this site's private file store in the
 browser (`src/engine/exportFile.ts`), and the Download link then copies it to
@@ -127,16 +150,53 @@ and writes there directly, so the video is on disk once, not twice. The chosen
 file only takes its new contents when the export finishes, so cancelling leaves
 an existing file as it was; a newly named one is left empty.
 
+## Checked against CapCut desktop
+
+CapCut 9.4's own interface text and engine names (in `VECreator.dll` and
+`videoeditor.dll`, read only) confirm that it has: the main-track magnet,
+box selection on the timeline, auto snapping, In point (I) / Out point (O),
+compound clips, curve speed, freeze frame, extract audio, ripple delete, blend
+modes such as Color dodge and Soft light, Heart and Star masks with feather and
+round corners, font upload, and track Lock / Hide / Mute. It names no "remove
+track" or "add track" buttons, and its engine removes empty tracks, so this
+editor does the same. Features with no match there: the project list and file
+handling (a web page cannot work like a desktop app here), and the adjustment
+layer, whose CapCut counterpart is only an engine name.
+
 ## Not implemented
 
-Effects, filters, loop and combo animations, a curve editor for custom keyframe easing, compound
-clips, and writing drafts back to CapCut. See `TASK_PROGRESS.md` for the full list.
+Effects, filters, loop and combo animations, a curve editor for custom keyframe
+easing, and writing drafts back to CapCut. See `TASK_PROGRESS.md` for the full list.
+
+A compound clip is stored as in CapCut in what it holds (a whole draft) but
+not where: CapCut puts that draft in a `materials.drafts` entry of type
+"combination" referenced by the clip, while here it sits on the clip's video
+material, so copying, splitting and cropping the clip carry it along. Its
+sound is the sound of the clips inside, moved out to where it plays, with the
+compound clip's own volume, volume keyframes and fades on top; a reversed,
+frozen or ramped compound clip is silent. Breaking one apart works at any
+constant speed (the clips are sped up to match) but not reversed, frozen or
+ramped, and its own position, effects and fades do not carry over to the clips.
+
+An adjustment layer is a clip on a track of type `adjust` (CapCut's engine
+names an `adjust_track`; no local draft has one, so the shape is this
+editor's own) with no media, whose brightness, contrast and saturation recolour
+everything drawn beneath it. Fonts are matched by file name: a CapCut text asks
+for the family named after its `font_path` file, so importing that file draws
+it in its font.
+
+Blend modes use CapCut's names (`mix_mode` effects, "Screen" and "Overlay"
+in the local drafts) drawn with the canvas compositing operations of the same
+names. The crop ratio is kept in CapCut's `crop_ratio` field; only "free"
+appears locally.
 
 How a speed ramp maps to time is worked out from CapCut's drafts, not read
 from them: taking each point as a place in the clip's source, with speed
 changing steadily over time between points, gives the timeline length of all 62
 ramped clips in the local drafts to within a frame. Hero and Bullet are CapCut's
-curves as found; the other presets are this editor's own. A ramp on a reversed
+curves as found. CapCut also has Montage, Jump Cut, Flash In and Flash Out, but
+their curves are not on this computer, so they are not offered rather than
+guessed. A ramp on a reversed
 clip is assumed to run in playing order. While playing, the preview can trail a
 steep ramp by about a third of a second; paused frames and the export are exact.
 

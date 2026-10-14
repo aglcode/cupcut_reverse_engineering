@@ -25,7 +25,7 @@ import { EXPORT_SAMPLE_RATE, mixAudio } from './audioMix'
 import { AudioSources } from './audioSources'
 import { drawFrame, type FrameImage } from './compositor'
 import { assetKey, missingMedia, openInput, type Assets } from './media'
-import { audibleSegments, mediaSourceTime, resolveFrame, type MediaLayer } from './resolve'
+import { audibleSegments, mediaLayersOf, mediaSourceTime, resolveFrame, type MediaLayer } from './resolve'
 
 export type ExportSettings = {
   width: number
@@ -100,11 +100,16 @@ type Reader = {
 // own start and end.
 async function openReader(
   layer: MediaLayer,
+  top: MediaLayer,
+  draft: Draft,
   file: File,
   fps: number,
   origin: number,
 ): Promise<Reader> {
-  const { segment, material, span } = layer
+  const { segment, material } = layer
+  // A clip inside a compound clip is on screen while the compound clip is.
+  const span = top.span
+  const nested = layer !== top
   const input = openInput(file)
   const track = await input.getPrimaryVideoTrack()
   if (!track || !(await track.canDecode())) {
@@ -118,7 +123,15 @@ async function openReader(
     // the start of the export range.
     let frame = Math.max(0, Math.ceil(((span.from - origin) * fps) / 1_000_000))
     for (let t = origin + frameToUs(frame, fps); t < span.to; t = origin + frameToUs(++frame, fps)) {
-      if (t >= span.from) yield mediaSourceTime(segment, material, t) / 1_000_000
+      if (t < span.from) continue
+      if (!nested) {
+        yield mediaSourceTime(segment, material, t) / 1_000_000
+        continue
+      }
+      // Inside a compound clip the timing is the compound clip's and then the
+      // clip's own, so the frame is looked up the way the export loop does.
+      const found = mediaLayersOf(resolveFrame(draft, t)).find((m) => m.layer.key === layer.key)
+      if (found) yield found.layer.sourceUs / 1_000_000
     }
   }
   return { input, frames: sink.canvasesAtTimestamps(timestamps()), until: span.to }
@@ -229,30 +242,31 @@ export async function exportDraft(
       // Sound for a stretch is queued before that stretch's first picture.
       while (audio && mixedUntil < rangeEnd && t >= mixedUntil) await mixNextChunk(audio)
 
-      const layers = resolveFrame(draft, t).visual
+      const frameLayers = resolveFrame(draft, t)
+      const layers = frameLayers.visual
       const images = new Map<string, FrameImage>()
 
-      for (const layer of layers) {
-        if (layer.kind !== 'media') continue
+      for (const { layer, top } of mediaLayersOf(frameLayers)) {
         const asset = assets[assetKey(layer.material.path)]
+        if (!asset) continue
         if (asset.image) {
-          images.set(layer.segment.id, { image: asset.image, width: asset.width, height: asset.height })
+          images.set(layer.key, { image: asset.image, width: asset.width, height: asset.height })
           continue
         }
-        let reader = readers.get(layer.segment.id)
+        let reader = readers.get(layer.key)
         if (!reader) {
-          reader = await openReader(layer, asset.file, fps, range.start)
-          readers.set(layer.segment.id, reader)
+          reader = await openReader(layer, top, draft, asset.file, fps, range.start)
+          readers.set(layer.key, reader)
         }
         const next = await reader.frames.next()
         const decoded = next.done ? null : next.value
         if (decoded) {
           const { canvas: image } = decoded
-          images.set(layer.segment.id, { image, width: image.width, height: image.height })
+          images.set(layer.key, { image, width: image.width, height: image.height })
         }
       }
 
-      drawFrame(ctx, width, height, layers, (layer) => images.get(layer.segment.id) ?? null)
+      drawFrame(ctx, width, height, layers, (layer) => images.get(layer.key) ?? null)
       await video.add(frame / fps, 1 / fps)
       onProgress((frame + 1) / total)
 

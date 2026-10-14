@@ -86,8 +86,10 @@ export type Adjust = { brightness: number; contrast: number; saturation: number 
 
 export type AudioFade = { fade_in_duration: number; fade_out_duration: number }
 
+import type { BlendName } from './blend'
+
 // A mask over a clip's picture. See mask.ts for the shapes and the units.
-export type MaskType = 'line' | 'mirror' | 'circle' | 'rectangle'
+export type MaskType = 'line' | 'mirror' | 'circle' | 'rectangle' | 'geometric_shape'
 export type MaskConfig = {
   width: number
   height: number
@@ -149,15 +151,19 @@ export type Segment = {
   mask: Mask | null
   // At most one "in" and one "out".
   animations: ClipAnimation[]
+  // Blend mode by CapCut's name for it, null for normal. See blend.ts.
+  mix_mode: BlendName | null
 }
 
-export type TrackType = 'video' | 'audio' | 'text'
+export type TrackType = 'video' | 'audio' | 'text' | 'adjust'
 
 export type Track = {
   id: string
   type: TrackType
   name: string
   segments: Segment[]
+  // Lock, hide and mute switches, as bits. See tracks.ts. Missing means none.
+  attribute?: number
 }
 
 export type VideoMaterial = {
@@ -170,6 +176,12 @@ export type VideoMaterial = {
   height: number
   has_audio: boolean
   crop: Crop
+  // "free", or the picture shape the crop is held to, such as "16:9". See crop.ts.
+  crop_ratio?: string
+  // Shown in place of the file name, as CapCut names a compound clip.
+  material_name?: string
+  // The timeline inside a compound clip; path is then empty. See compound.ts.
+  compound?: Draft
 }
 
 export type AudioMaterial = {

@@ -18,7 +18,8 @@ import {
 
 export type ClipboardItem = {
   segment: Segment
-  material: VideoMaterial | AudioMaterial | TextMaterial
+  // null for an adjustment layer.
+  material: VideoMaterial | AudioMaterial | TextMaterial | null
   trackType: TrackType
   // The track the clip was on. Clips from one track are pasted onto one track.
   lane: string
@@ -42,10 +43,11 @@ export function copySegments(draft: Draft, segmentIds: string[]): Clipboard | nu
     for (const segment of track.segments) {
       if (!wanted.has(segment.id)) continue
       const material = findMaterial(draft, segment.material_id)
-      if (!material) continue
+      // Only an adjustment layer has no material.
+      if (!material && track.type !== 'adjust') continue
       items.push({
         segment: structuredClone(segment),
-        material: structuredClone(material),
+        material: material ? structuredClone(material) : null,
         trackType: track.type,
         lane: track.id,
         fromMain: index === main,

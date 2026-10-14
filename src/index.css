@@ -319,6 +319,7 @@ input[type='color'] {
 }
 
 .preview-stage {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -331,6 +332,185 @@ input[type='color'] {
   max-height: 100%;
   background: #000;
   box-shadow: 0 0 0 1px var(--border);
+}
+
+/* Handles over the preview canvas. The layer lets clicks through; only the
+   handles themselves take them. */
+.preview-overlay {
+  position: absolute;
+  pointer-events: none;
+}
+
+.mask-overlay {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.mask-outline * {
+  fill: none;
+  stroke: #ffd24a;
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 6 4;
+}
+
+.mask-stem {
+  stroke: #ffd24a;
+}
+
+.mask-handle {
+  fill: #fff;
+  stroke: #ffd24a;
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.mask-handle-move {
+  fill: #ffd24a;
+  cursor: move;
+}
+
+.crop-editor {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #111216);
+  z-index: 5;
+}
+
+.crop-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+}
+
+.crop-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.crop-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.crop-frame {
+  position: relative;
+  overflow: hidden;
+}
+
+.crop-picture {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The kept part; everything outside it is dimmed by the box's own shadow. */
+.crop-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid #fff;
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.6);
+  cursor: move;
+  touch-action: none;
+}
+
+.crop-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  background: #fff;
+  border: 1px solid #000;
+  border-radius: 2px;
+}
+
+.crop-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+.crop-handle-n { left: 50%; top: 0; cursor: ns-resize; }
+.crop-handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.crop-handle-e { left: 100%; top: 50%; cursor: ew-resize; }
+.crop-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-handle-s { left: 50%; top: 100%; cursor: ns-resize; }
+.crop-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-handle-w { left: 0; top: 50%; cursor: ew-resize; }
+
+.project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.project-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-list li.open {
+  background: var(--panel-2);
+}
+
+.project-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-meta {
+  grid-row: 2;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-actions {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-open-tag {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+button.danger {
+  border-color: #d9534f;
+  color: #ffb3b0;
+}
+
+input.project-name {
+  min-width: 0;
+  width: 220px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+}
+
+input.project-name:hover,
+input.project-name:focus {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: inherit;
 }
 
 .transport {
@@ -413,7 +593,7 @@ input[type='color'] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex: 0 0 112px;
+  flex: 0 0 168px;
   /* Fixed, whatever the name is: lanes must line up with the ruler. */
   width: 112px;
   min-width: 0;
@@ -638,6 +818,67 @@ input[type='color'] {
 .anim-out {
   right: 0;
   border-top-left-radius: 4px;
+}
+
+/* The dots that drag a fade's or an animation's length, on the selected clip. */
+.length-handle {
+  position: absolute;
+  z-index: 3;
+  width: 10px;
+  height: 10px;
+  border: 1px solid #000;
+  border-radius: 50%;
+  background: #fff;
+  cursor: ew-resize;
+}
+
+.fade-handle {
+  top: 1px;
+}
+
+.anim-handle {
+  bottom: 0;
+  background: var(--accent);
+}
+
+.clip-adjust {
+  background: repeating-linear-gradient(135deg, #6a4fb3 0 8px, #5c43a0 8px 16px);
+}
+
+.track-switches {
+  display: flex;
+  gap: 2px;
+}
+
+.track-switch {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+}
+
+.track-switch:hover {
+  color: inherit;
+}
+
+.track-switch.on {
+  color: var(--accent);
+}
+
+.track-row.locked .lane {
+  background-image: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.04) 0 6px, transparent 6px 12px);
+}
+
+.track-row.locked .clip {
+  cursor: not-allowed;
+}
+
+.track-row.hidden-track .clip {
+  opacity: 0.45;
 }
 
 .checks {

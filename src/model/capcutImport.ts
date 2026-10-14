@@ -2,12 +2,13 @@
 // render is carried over; everything else is reported in `warnings` rather than
 // silently dropped.
 
-import { cropRect, FULL_CROP, isAxisAligned, rectToCrop } from './crop'
+import { cropRect, FULL_CROP, isAxisAligned, isCropRatio, rectToCrop } from './crop'
 import { inOrder } from './animations'
+import { isBlendName, type BlendName } from './blend'
 import { isMaskProperty } from './keyframes'
 import { MASK_TYPES } from './mask'
 import { cleanPoints } from './speedCurve'
-import { DEFAULT_TEXT_STYLE, normalizeColor } from './textStyle'
+import { DEFAULT_TEXT_STYLE, familyValue, normalizeColor } from './textStyle'
 import { fitSpeed } from './timing'
 import { frameDuration, snapToFrame } from './time'
 import {
@@ -72,6 +73,12 @@ function rgbToHex(rgb: unknown): string | null {
 // {"text":"GAS","styles":[{"fill":{"content":{"solid":{"color":[r,g,b]}}},"size":15,…}]}
 // `mixed` is true when the text has several differently styled ranges; only
 // the first is used.
+// The name of a text's font file, if it has one.
+const fontFile = (m: Json): string | null => {
+  const path = asString(m.font_path)
+  return path ? baseName(path) : null
+}
+
 function readText(m: Json): { material: TextMaterial; mixed: boolean } {
   let content = asString(m.content)
   let size = asNumber(m.font_size, 15)
@@ -109,8 +116,9 @@ function readText(m: Json): { material: TextMaterial; mixed: boolean } {
     content,
     font_size: size,
     text_color: color,
-    // CapCut's font is a downloaded file that cannot be loaded here.
-    font_family: d.font_family,
+    // CapCut's font is a file; the text asks for the family of that file's
+    // name, which draws once the file is imported (see textStyle.ts).
+    font_family: fontFile(m) ? familyValue(fontFile(m)!.replace(/\.(ttf|otf|woff2?)$/i, '')) : d.font_family,
     bold,
     italic,
     underline,
@@ -185,6 +193,7 @@ const KEYFRAME_PROPERTIES: Record<TrackType, KeyframeProperty[]> = {
   ],
   text: ['KFTypePositionX', 'KFTypePositionY', 'KFTypeScaleX', 'KFTypeScaleY', 'KFTypeRotation', 'KFTypeAlpha'],
   audio: ['KFTypeVolume'],
+  adjust: [],
 }
 
 // Reads segment.common_keyframes. CapCut also keyframes colour properties
@@ -234,7 +243,7 @@ function readMarks(v: unknown): MarkItem[] {
 const ADJUST_TYPES = ['brightness', 'contrast', 'saturation'] as const
 const EFFECT_LABELS: Record<string, string> = {
   filter: 'filters',
-  mix_mode: 'blend modes',
+  mix_mode: 'blend modes of a kind that is not supported',
   bloom: 'text glow',
   text_effect: 'text effects',
 }
@@ -266,7 +275,11 @@ const REF_LABELS: Record<string, string> = {
 
 // A mask as CapCut stores it, or null for a kind of mask not drawn here.
 function readMask(m: Json): Mask | null {
-  const kind = MASK_TYPES.find((k) => k.type === m.resource_type)
+  // Heart and Star share a resource_type and are told apart by name.
+  const kind =
+    m.resource_type === 'geometric_shape'
+      ? MASK_TYPES.find((k) => k.type === 'geometric_shape' && k.name.toLowerCase() === asString(m.name).toLowerCase())
+      : MASK_TYPES.find((k) => k.type === m.resource_type)
   if (!kind) return null
   const c = isObject(m.config) ? m.config : {}
   const d = DEFAULT_MASK_CONFIG
@@ -315,8 +328,13 @@ export function importCapCutDraft(json: unknown): ImportResult {
       height: asNumber(m.height, 0),
       has_audio: m.has_audio === true,
       crop,
+      crop_ratio: isCropRatio(m.crop_ratio) ? m.crop_ratio : 'free',
+      ...(asString(m.material_name) ? { material_name: asString(m.material_name) } : {}),
     })
   }
+  // What compound clips hold, imported like any draft. Warnings from inside
+  // them are reported once each, after the outer draft's own.
+  const innerWarnings: string[] = []
   const audios = new Map<string, AudioMaterial>()
   for (const m of asArray(materialsIn.audios)) {
     audios.set(asString(m.id), {
@@ -341,7 +359,7 @@ export function importCapCutDraft(json: unknown): ImportResult {
     for (const m of asArray(list)) refIndex.set(asString(m.id), [kind, m])
   }
 
-  const pools: Record<TrackType, Map<string, { id: string }>> = { video: videos, audio: audios, text: texts }
+  const pools: Record<TrackType, Map<string, { id: string }>> = { video: videos, audio: audios, text: texts, adjust: new Map() }
   const skippedTracks = new Map<string, number>()
   const unsupportedRefs = new Map<string, number>()
   let replacedTransitions = 0
@@ -349,7 +367,7 @@ export function importCapCutDraft(json: unknown): ImportResult {
   let imageBackgrounds = 0
   let reversed = 0
   let dropped = 0
-  const counts: Record<TrackType, number> = { video: 0, audio: 0, text: 0 }
+  const counts: Record<TrackType, number> = { video: 0, audio: 0, text: 0, adjust: 0 }
   const tracks: Track[] = []
   const mainTrackIds = new Set<string>()
 
@@ -381,6 +399,7 @@ export function importCapCutDraft(json: unknown): ImportResult {
       let curve: SpeedCurve | null = null
       let mask: Mask | null = null
       const animations: ClipAnimation[] = []
+      let mixMode: BlendName | null = null
       let fade: AudioFade | null = null
       let transition: Transition | null = null
       let canvas: CanvasBackground | null = null
@@ -411,6 +430,14 @@ export function importCapCutDraft(json: unknown): ImportResult {
             if (length > 0) animations.push({ type: a.type, name, duration: length })
           }
         }
+        if (kind === 'drafts' && type === 'video' && m.type === 'combination' && isObject(m.draft)) {
+          const video = videos.get(materialId)
+          if (video && !video.compound) {
+            const inner = importCapCutDraft(m.draft)
+            for (const w of inner.warnings) innerWarnings.push(`Inside ${video.material_name || 'a compound clip'}: ${w}`)
+            videos.set(materialId, { ...video, path: '', compound: inner.draft })
+          }
+        }
         if (kind === 'audio_fades') fade = readFade(m)
         // Clip markers are in the clip's source time, which is how they are kept here too.
         if (kind === 'time_marks') marks = readMarks(m)
@@ -436,7 +463,9 @@ export function importCapCutDraft(json: unknown): ImportResult {
         if (kind === 'effects') {
           const adjustType = ADJUST_TYPES.find((a) => a === m.type)
           // enable_adjust false means the values are set but switched off.
-          if (adjustType && type === 'video') {
+          if (m.type === 'mix_mode' && type === 'video' && isBlendName(m.name)) {
+            mixMode = m.name
+          } else if (adjustType && type === 'video') {
             if (s.enable_adjust !== false) {
               adjust[adjustType] = Math.min(1, Math.max(-1, asNumber(m.value, 0)))
             }
@@ -486,6 +515,7 @@ export function importCapCutDraft(json: unknown): ImportResult {
         adjust,
         mask,
         animations: inOrder(animations),
+        mix_mode: mixMode,
       }
       // CapCut's stored speed for a ramped clip is sometimes the ramp's own
       // average and sometimes source over timeline length; the two differ by
@@ -502,6 +532,8 @@ export function importCapCutDraft(json: unknown): ImportResult {
       type,
       name: asString(t.name) || `${label} ${counts[type]}`,
       segments,
+      // Lock, hide and mute, as CapCut keeps them. See tracks.ts.
+      ...(asNumber(t.attribute, 0) ? { attribute: asNumber(t.attribute, 0) } : {}),
     })
   }
 
@@ -528,10 +560,18 @@ export function importCapCutDraft(json: unknown): ImportResult {
   if (rotated) {
     warnings.push(`${rotated} clip${rotated === 1 ? '' : 's'} with a rotated crop imported with an upright crop`)
   }
-  const textCount = [...texts.keys()].filter((id) => used.has(id)).length
-  if (textCount) {
+  // Fonts are files like any media: named here so they can be imported.
+  const fontFiles = [
+    ...new Set(
+      asArray(materialsIn.texts)
+        .filter((m) => used.has(asString(m.id)))
+        .map(fontFile)
+        .filter((f): f is string => f !== null),
+    ),
+  ]
+  if (fontFiles.length) {
     warnings.push(
-      `${textCount} text clip${textCount === 1 ? '' : 's'} shown in the default font (CapCut fonts cannot be loaded)`,
+      `Text uses font file${fontFiles.length === 1 ? '' : 's'} ${fontFiles.join(', ')}: import ${fontFiles.length === 1 ? 'it' : 'them'} to see the text in ${fontFiles.length === 1 ? 'that font' : 'those fonts'}`,
     )
   }
   const mixed = [...mixedTexts].filter((id) => used.has(id)).length
@@ -558,6 +598,7 @@ export function importCapCutDraft(json: unknown): ImportResult {
       `${replacedAnimations} animation${replacedAnimations === 1 ? '' : 's'} replaced with a fade of the same length`,
     )
   }
+  warnings.push(...innerWarnings)
   if (dropped) warnings.push(`${dropped} segment${dropped === 1 ? '' : 's'} could not be read and were skipped`)
 
   const draft: Draft = {
@@ -624,6 +665,7 @@ export function openProject(text: string): ImportResult {
         segment.curve_speed ??= null
         segment.mask ??= null
         segment.animations ??= []
+        segment.mix_mode ??= null
         segment.adjust ??= { brightness: 0, contrast: 0, saturation: 0 }
         if (segment.clip) segment.clip.flip ??= { horizontal: false, vertical: false }
       }

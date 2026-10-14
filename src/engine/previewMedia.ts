@@ -4,7 +4,7 @@
 
 import type { FrameImage } from './compositor'
 import { assetKey, type Assets } from './media'
-import type { ResolvedFrame, VisualLayer } from './resolve'
+import { mediaLayersOf, type ResolvedFrame, type VisualLayer } from './resolve'
 
 // How far an element may drift from the timeline before it is re-seeked.
 const DRIFT_PLAYING = 0.3
@@ -29,9 +29,9 @@ export class PreviewMedia {
 
   sync(frame: ResolvedFrame, assets: Assets, playing: boolean) {
     const wanted = new Map<string, Wanted>()
-    for (const layer of frame.visual) {
-      if (layer.kind !== 'media' || layer.material.type !== 'video') continue
-      wanted.set(layer.segment.id, {
+    for (const { layer } of mediaLayersOf(frame)) {
+      if (layer.material.type !== 'video') continue
+      wanted.set(layer.key, {
         path: layer.material.path,
         sourceUs: layer.sourceUs,
         speed: layer.speed,
@@ -90,7 +90,8 @@ export class PreviewMedia {
     const asset = assets[assetKey(layer.material.path)]
     if (!asset) return null
     if (asset.image) return { image: asset.image, width: asset.width, height: asset.height }
-    const { id, reverse, freeze } = layer.segment
+    const id = layer.key
+    const { reverse, freeze } = layer.segment
     const el = this.elements.get(id)
     const ready =
       el instanceof HTMLVideoElement &&
@@ -111,10 +112,11 @@ export class PreviewMedia {
     return copy ? { image: copy, width: copy.width, height: copy.height } : null
   }
 
-  // Drops elements for segments that no longer exist.
+  // Drops elements for segments that no longer exist. A clip inside a compound
+  // clip lives as long as the compound clip does.
   prune(liveSegmentIds: Set<string>) {
     for (const [id, el] of this.elements) {
-      if (liveSegmentIds.has(id)) continue
+      if (liveSegmentIds.has(id.split('/')[0])) continue
       el.pause()
       el.removeAttribute('src')
       el.load()

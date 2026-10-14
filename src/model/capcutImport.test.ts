@@ -353,8 +353,8 @@ describe('importCapCutDraft', () => {
     expect(warnings).toEqual([
       '1 effect track not imported',
       '1 filter track not imported',
-      '1 clip uses blend modes, which were not imported',
-      '1 text clip shown in the default font (CapCut fonts cannot be loaded)',
+      '1 clip uses blend modes of a kind that is not supported, which were not imported',
+      'Text uses font file ZY Classical.ttf: import it to see the text in that font',
       '1 transition replaced with a Mix (cross-dissolve) of the same length',
       '1 animation replaced with a fade of the same length',
     ])
@@ -387,7 +387,8 @@ describe('importCapCutDraft', () => {
       underline: true,
       bold: false,
       italic: false,
-      font_family: DEFAULT_TEXT_STYLE.font_family,
+      // The family of its font file, ZY Classical.ttf, falling back to the default.
+      font_family: `"ZY Classical", ${DEFAULT_TEXT_STYLE.font_family}`,
     })
   })
 

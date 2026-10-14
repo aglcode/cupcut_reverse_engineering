@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { missingMedia } from '../engine/media'
+import { assetKey, filesUsed, missingMedia } from '../engine/media'
 import { US_PER_SEC } from '../model/time'
 import { useEditor } from '../state/store'
 
@@ -25,7 +25,10 @@ export function MediaBin() {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string[]>([])
 
-  const list = Object.values(assets)
+  const projectMedia = useEditor((s) => s.projectMedia)
+  // This project's files: the ones imported into it and the ones its clips use.
+  const shown = new Set([...projectMedia, ...filesUsed(draft)])
+  const list = Object.values(assets).filter((a) => shown.has(assetKey(a.name)))
   const missing = missingMedia(draft, assets)
 
   const onFiles = async (files: FileList | null) => {
@@ -42,7 +45,7 @@ export function MediaBin() {
       <input
         ref={inputRef}
         type="file"
-        accept="video/*,audio/*,image/*"
+        accept="video/*,audio/*,image/*,.ttf,.otf,.woff,.woff2"
         multiple
         hidden
         onChange={(e) => void onFiles(e.target.files)}
@@ -85,7 +88,10 @@ export function MediaBin() {
       )}
 
       {list.length === 0 ? (
-        <p className="hint">Import video, audio or images, then add them to the timeline.</p>
+        <p className="hint">
+          Import video, audio or images, then add them to the timeline. Font files (.ttf, .otf,
+          .woff) can be imported too.
+        </p>
       ) : (
         <ul className="asset-list">
           {list.map((asset) => (
@@ -94,16 +100,22 @@ export function MediaBin() {
                 {asset.name}
               </span>
               <span className="asset-meta">
-                {asset.kind === 'image' ? 'image' : formatDuration(asset.duration)}
+                {asset.kind === 'image' ? 'image' : asset.kind === 'font' ? 'font' : formatDuration(asset.duration)}
               </span>
-              <button type="button" onClick={() => addAssetToTimeline(asset)}>
-                Add
-              </button>
+              {asset.kind === 'font' ? (
+                <span className="asset-font" style={{ fontFamily: `"${asset.family}"` }} title="Pick it under Font for a text clip">
+                  Aa
+                </span>
+              ) : (
+                <button type="button" onClick={() => addAssetToTimeline(asset)}>
+                  Add
+                </button>
+              )}
               <button
                 type="button"
                 className="icon"
                 aria-label={`Remove ${asset.name}`}
-                title="Remove from the media list and from browser storage"
+                title="Remove from this project's media (and from browser storage, unless another project has it)"
                 onClick={() => void removeAsset(asset.name)}
               >
                 ×

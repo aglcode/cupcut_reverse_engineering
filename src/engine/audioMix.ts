@@ -17,6 +17,9 @@ export const EXPORT_SAMPLE_RATE = 48_000
 // It covers rounding at the edges and the few samples a resampler looks ahead.
 const MARGIN = 0.05
 
+// How often a compound clip's volume over its sounds is followed, in microseconds.
+const ENVELOPE_STEP = 20_000
+
 // `length` seconds of `buffer` starting at `from`, played backwards.
 function reversed(ctx: BaseAudioContext, buffer: AudioBuffer, from: number, length: number) {
   const first = Math.min(buffer.length, Math.max(0, Math.round(from * buffer.sampleRate)))
@@ -89,7 +92,7 @@ export async function mixAudio(
     const at = (t: number) => Math.max(0, (t - from) / 1_000_000)
 
     let scheduled = 0
-    for (const { segment, path } of segments) {
+    for (const { segment, path, gain: outerGain } of segments) {
       const src = segment.source_timerange
       if (!src) continue
       const { start } = segment.target_timerange
@@ -162,7 +165,19 @@ export async function mixAudio(
         for (const t of corners) fade.gain.linearRampToValueAtTime(fadeGain(segment, t), at(t))
       }
 
-      node.connect(gain).connect(fade).connect(ctx.destination)
+      // The volume and fades of the compound clip a sound is inside. They are
+      // straight lines between keyframes and fade corners, so following them
+      // every 20 ms is close; it is exact at those points when they fall on it.
+      const outer = ctx.createGain()
+      if (outerGain) {
+        outer.gain.setValueAtTime(outerGain(begin), at(begin))
+        for (let t = begin + ENVELOPE_STEP; t < finish; t += ENVELOPE_STEP) {
+          outer.gain.linearRampToValueAtTime(outerGain(t), at(t))
+        }
+        outer.gain.linearRampToValueAtTime(outerGain(finish - 1), at(finish))
+      }
+
+      node.connect(gain).connect(fade).connect(outer).connect(ctx.destination)
       scheduled++
     }
     return scheduled > 0 ? await ctx.startRendering() : null

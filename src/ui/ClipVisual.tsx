@@ -9,13 +9,17 @@ import {
   thumbnailStep,
   visualsVersion,
 } from '../engine/clipVisuals'
+import { getCompoundThumbnail } from '../engine/compoundVisuals'
 import type { Asset } from '../engine/media'
 import { sourceTimeAt } from '../model/timing'
-import type { Segment } from '../model/types'
+import type { Segment, VideoMaterial } from '../model/types'
+import { useEditor } from '../state/store'
 
 type Props = {
   segment: Segment
-  asset: Asset
+  // The file shown; null for a compound clip, whose inside is drawn instead.
+  asset: Asset | null
+  compound?: VideoMaterial
   // Audio-track clips show a waveform even when their file is a video
   // (extracted audio).
   waveform: boolean
@@ -35,6 +39,7 @@ const WAVE_COLOUR = 'rgb(255 255 255 / 0.75)'
 export function ClipVisual({
   segment,
   asset,
+  compound,
   waveform,
   mediaDuration,
   pxPerUs,
@@ -45,6 +50,7 @@ export function ClipVisual({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Re-render when a thumbnail or a set of peaks arrives.
   const version = useSyncExternalStore(subscribeVisuals, visualsVersion)
+  const assets = useEditor((s) => s.assets)
   const width = Math.max(0, Math.ceil(to - from))
 
   useEffect(() => {
@@ -60,7 +66,7 @@ export function ClipVisual({
     // Timeline pixel (from the clip's left edge) to source time.
     const sourceAt = (x: number) => sourceTimeAt(segment, start + x / pxPerUs)
 
-    if (waveform) {
+    if (waveform && asset) {
       const peaks = getPeaks(asset)
       if (!peaks) return
       ctx.fillStyle = WAVE_COLOUR
@@ -73,17 +79,21 @@ export function ClipVisual({
       return
     }
 
-    const aspect = asset.height > 0 ? asset.width / asset.height : 16 / 9
+    const shape = compound ?? asset
+    if (!shape) return
+    const aspect = shape.height > 0 ? shape.width / shape.height : 16 / 9
     const tileWidth = Math.max(8, Math.round(height * aspect))
     const step = thumbnailStep((tileWidth / pxPerUs) * segment.speed)
     const last = Math.max(0, mediaDuration - 1)
     for (let i = Math.floor(from / tileWidth); i * tileWidth < to; i++) {
       // Each tile shows the frame at its own left edge.
       const source = Math.min(Math.max(0, sourceAt(i * tileWidth)), last)
-      const tile = getThumbnail(asset, thumbnailBucket(source, step))
+      const tile = compound
+        ? getCompoundThumbnail(compound, source, step, assets, THUMB_HEIGHT)
+        : asset && getThumbnail(asset, thumbnailBucket(source, step))
       if (tile) ctx.drawImage(tile, i * tileWidth - from, 0, tileWidth, height)
     }
-  }, [segment, asset, waveform, mediaDuration, pxPerUs, from, to, width, height, version])
+  }, [segment, asset, compound, assets, waveform, mediaDuration, pxPerUs, from, to, width, height, version])
 
   if (width === 0) return null
   return (
