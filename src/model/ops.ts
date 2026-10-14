@@ -184,6 +184,25 @@ const sameLayout = (a: Draft, b: Draft): boolean =>
     )
   })
 
+// CapCut leaves no empty tracks: none of the 181 tracks in the local drafts is
+// empty, and its engine names removeEmptyTrack and remove_empty_tracks. A
+// track an edit leaves empty is removed; the first video track, the main
+// track, always stays.
+function withoutEmptyTracks(tracks: Track[]): Track[] {
+  const main = tracks.find((t) => t.type === 'video')
+  return tracks.filter((t) => t.segments.length > 0 || t === main)
+}
+
+// Moves a clip onto a new track of its kind, as dragging it above the top
+// track (or, for sound, below the bottom one) does in CapCut.
+export function moveSegmentToNewTrack(draft: Draft, segmentId: string, desiredStart: number): Draft {
+  const loc = findSegment(draft, segmentId)
+  if (!loc) return draft
+  const withTrack = addTrack(draft, loc.track.type)
+  const created = loc.track.type === 'audio' ? withTrack.tracks[0] : withTrack.tracks[withTrack.tracks.length - 1]
+  return moveSegment(withTrack, segmentId, desiredStart, created.id)
+}
+
 // Every edit that changes the tracks ends here: segments are put in timeline
 // order (clips that start together keep the order they were given in), the
 // main track is closed up if the magnet is on, and the duration is recomputed.
@@ -197,7 +216,7 @@ function finalize(draft: Draft, tracks: Track[]): Draft {
   })
   const settled = main >= 0 ? followMainTrack(draft, sorted, main) : sorted
   const duration = Math.max(0, ...settled.flatMap((t) => t.segments.map(segmentEnd)))
-  return { ...draft, tracks: settled, duration }
+  return { ...draft, tracks: withoutEmptyTracks(settled), duration }
 }
 
 // When the magnet moves a main-track clip, the clips linked to it on other
@@ -262,23 +281,11 @@ function pruneMaterials(draft: Draft): Draft {
 
 export function addTrack(draft: Draft, type: TrackType): Draft {
   const count = draft.tracks.filter((t) => t.type === type).length
-  const label = type === 'video' ? 'Video' : type === 'audio' ? 'Audio' : 'Text'
+  const label = type === 'video' ? 'Video' : type === 'audio' ? 'Audio' : type === 'adjust' ? 'Adjust' : 'Text'
   const track: Track = { id: newId(), type, name: `${label} ${count + 1}`, segments: [] }
   // Audio has no render order, so it goes at the bottom of the stack.
   const tracks = type === 'audio' ? [track, ...draft.tracks] : [...draft.tracks, track]
   return { ...draft, tracks }
-}
-
-export function removeTrack(draft: Draft, trackId: string): Draft {
-  const track = draft.tracks.find((t) => t.id === trackId)
-  if (!track || draft.tracks.length === 1) return draft
-  if (isMagnetTrack(draft, draft.tracks.indexOf(track))) return draft
-  return pruneMaterials(
-    finalize(
-      draft,
-      draft.tracks.filter((t) => t.id !== trackId),
-    ),
-  )
 }
 
 export function insertSegment(draft: Draft, trackId: string, segment: Segment): Draft {
@@ -349,6 +356,7 @@ export function addMedia(
     adjust: { ...NO_ADJUST },
     mask: null,
     animations: [],
+    mix_mode: null,
   }
   const materials = isAudio
     ? { ...room.draft.materials, audios: [...room.draft.materials.audios, material] }
@@ -366,6 +374,40 @@ export function addMedia(
     draft: insertSegment({ ...room.draft, materials }, room.trackId, segment),
     segmentId: segment.id,
   }
+}
+
+// An adjustment layer: a clip on an adjust track that changes the colour of
+// everything beneath it while it lasts. It has no media and no material
+// (material_id is empty); its brightness, contrast and saturation are kept on
+// the segment and can be keyframed, from the segment start as for text.
+export function addAdjustmentLayer(draft: Draft, at: number): AddResult {
+  const start = snapToFrame(at, draft.fps)
+  const duration = floorToFrame(DEFAULT_STILL_DURATION, draft.fps)
+  const room = trackWithRoom(draft, 'adjust', start, duration)
+  const segment: Segment = {
+    id: newId(),
+    material_id: '',
+    source_timerange: null,
+    target_timerange: { start, duration },
+    speed: 1,
+    curve_speed: null,
+    volume: 1,
+    clip: null,
+    visible: true,
+    common_keyframes: [],
+    audio_fade: null,
+    transition: null,
+    canvas: null,
+    reverse: false,
+    freeze: false,
+    group_id: '',
+    time_marks: [],
+    adjust: { ...NO_ADJUST },
+    mask: null,
+    animations: [],
+    mix_mode: null,
+  }
+  return { draft: insertSegment(room.draft, room.trackId, segment), segmentId: segment.id }
 }
 
 export function addText(draft: Draft, content: string, at: number): AddResult {
@@ -401,6 +443,7 @@ export function addText(draft: Draft, content: string, at: number): AddResult {
     adjust: { ...NO_ADJUST },
     mask: null,
     animations: [],
+    mix_mode: null,
   }
   const materials = { ...room.draft.materials, texts: [...room.draft.materials.texts, material] }
   return {
@@ -614,6 +657,7 @@ export function extractAudio(draft: Draft, segmentId: string): AddResult | null 
     adjust: { ...NO_ADJUST },
     mask: null,
     animations: [],
+    mix_mode: null,
   }
   const silent: Segment = {
     ...segment,
@@ -669,7 +713,7 @@ export function pasteSegments(
   // Fresh copies. Group ids are remapped so pasted clips link to each other.
   const groups = new Map<string, string>()
   const copies = clipboard.items.map((item) => {
-    const material = { ...structuredClone(item.material), id: newId() }
+    const material = item.material && { ...structuredClone(item.material), id: newId() }
     const source = item.segment
     let group = ''
     if (source.group_id) {
@@ -679,7 +723,7 @@ export function pasteSegments(
     const segment: Segment = {
       ...structuredClone(source),
       id: newId(),
-      material_id: material.id,
+      material_id: material?.id ?? '',
       group_id: group,
       time_marks: source.time_marks.map((m) => ({ ...m, id: newId() })),
       common_keyframes: source.common_keyframes.map((k) => ({
@@ -704,9 +748,9 @@ export function pasteSegments(
   let working: Draft = {
     ...draft,
     materials: {
-      videos: [...draft.materials.videos, ...copies.flatMap((c) => (c.material.type === 'video' || c.material.type === 'photo' ? [c.material] : []))],
-      audios: [...draft.materials.audios, ...copies.flatMap((c) => (c.material.type === 'audio' ? [c.material] : []))],
-      texts: [...draft.materials.texts, ...copies.flatMap((c) => (c.material.type === 'text' ? [c.material] : []))],
+      videos: [...draft.materials.videos, ...copies.flatMap((c) => (c.material?.type === 'video' || c.material?.type === 'photo' ? [c.material] : []))],
+      audios: [...draft.materials.audios, ...copies.flatMap((c) => (c.material?.type === 'audio' ? [c.material] : []))],
+      texts: [...draft.materials.texts, ...copies.flatMap((c) => (c.material?.type === 'text' ? [c.material] : []))],
     },
   }
 
@@ -991,6 +1035,7 @@ export function freezeFrame(
     adjust: evalAdjust(original, t),
     mask: evalMask(original, t),
     animations: [],
+    mix_mode: null,
     common_keyframes: [],
     audio_fade: null,
     transition: null,

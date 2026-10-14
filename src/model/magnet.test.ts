@@ -5,11 +5,11 @@ import {
   addMedia,
   addText,
   addTrack,
+  removeSegments,
   findSegment,
   freezeFrame,
   moveSegment,
   removeSegment,
-  removeTrack,
   rippleDelete,
   setMagnet,
   setSpeed,
@@ -212,12 +212,11 @@ describe('main-track magnet', () => {
     expectPacked(made.draft)
   })
 
-  it('does not let the main track be removed', () => {
+  it('keeps the main track even when an edit leaves it empty', () => {
     const { draft } = packed()
-    const two = addTrack(draft, 'video')
-    const main = two.tracks.find((t) => t.type === 'video')!.id
-    expect(removeTrack(two, main)).toBe(two)
-    expect(removeTrack(setMagnet(two, false), main).tracks.some((t) => t.id === main)).toBe(false)
+    const ids = draft.tracks.flatMap((t) => t.segments.map((s) => s.id))
+    const emptied = removeSegments(draft, ids)
+    expect(emptied.tracks.map((t) => t.type)).toEqual(['video'])
   })
 })
 

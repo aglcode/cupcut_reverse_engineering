@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   availableCodecs,
   CODECS,
@@ -11,7 +11,7 @@ import { canPickExportFile, openExportFile, pickExportFile } from '../engine/exp
 import { missingMedia } from '../engine/media'
 import { effectiveRange, hasExportRange } from '../model/exportRange'
 import { formatTimecode } from '../model/time'
-import { useEditor } from '../state/store'
+import { rootDraft, useEditor } from '../state/store'
 
 const HEIGHTS = [2160, 1440, 1080, 720, 480]
 const FPS_OPTIONS = [24, 25, 30, 50, 60]
@@ -33,7 +33,10 @@ type Status =
   | { step: 'error'; message: string }
 
 export function ExportDialog({ onClose }: { onClose: () => void }) {
-  const draft = useEditor((s) => s.draft)
+  const current = useEditor((s) => s.draft)
+  const stack = useEditor((s) => s.compoundStack)
+  // Inside a compound clip, the export is still of the whole project.
+  const draft = useMemo(() => rootDraft({ draft: current, compoundStack: stack }), [current, stack])
   const assets = useEditor((s) => s.assets)
   const canvas = draft.canvas_config
   const [height, setHeight] = useState(canvas.height)

@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 import { patchText } from '../model/ops'
-import { ALIGN_CENTER, ALIGN_LEFT, ALIGN_RIGHT, FONT_FAMILIES } from '../model/textStyle'
+import { ALIGN_CENTER, ALIGN_LEFT, ALIGN_RIGHT, FONT_FAMILIES, familyValue, firstFamily } from '../model/textStyle'
 import type { TextMaterial, TextStyle } from '../model/types'
-import { useEditor } from '../state/store'
+import { canListLocalFonts, useEditor } from '../state/store'
 
 type NumberInputProps = {
   label: string
@@ -46,21 +46,54 @@ export function TextStyleFields({ material, NumberField }: Props) {
 
   const outlined = material.border_color !== ''
   const boxed = material.background_color !== ''
-  const knownFont = FONT_FAMILIES.some((f) => f.value === material.font_family)
+  const assets = useEditor((s) => s.assets)
+  const localFonts = useEditor((s) => s.localFonts)
+  const imported = Object.values(assets)
+    .filter((a) => a.kind === 'font' && a.family)
+    .map((a) => ({ label: a.family!, value: familyValue(a.family!) }))
+  const installed = localFonts.map((family) => ({ label: family, value: familyValue(family) }))
+  const knownFont = [...FONT_FAMILIES, ...imported, ...installed].some((f) => f.value === material.font_family)
 
   return (
     <>
       <label className="field">
         <span>Font</span>
         <select value={material.font_family} onChange={(e) => set({ font_family: e.target.value })}>
-          {!knownFont && <option value={material.font_family}>{material.font_family}</option>}
-          {FONT_FAMILIES.map((f) => (
-            <option key={f.label} value={f.value}>
-              {f.label}
-            </option>
-          ))}
+          {!knownFont && (
+            <option value={material.font_family}>{firstFamily(material.font_family)} (not imported)</option>
+          )}
+          <optgroup label="Always available">
+            {FONT_FAMILIES.map((f) => (
+              <option key={f.label} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </optgroup>
+          {imported.length > 0 && (
+            <optgroup label="Imported">
+              {imported.map((f) => (
+                <option key={f.label} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {installed.length > 0 && (
+            <optgroup label="On this computer">
+              {installed.map((f) => (
+                <option key={f.label} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
       </label>
+      {canListLocalFonts() && localFonts.length === 0 && (
+        <button type="button" onClick={() => void useEditor.getState().loadLocalFonts()}>
+          List fonts on this computer…
+        </button>
+      )}
       <div className="checks" role="group" aria-label="Style">
         <span>Style</span>
         {check('Bold', material.bold, (bold) => set({ bold }))}

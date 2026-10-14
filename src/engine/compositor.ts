@@ -1,12 +1,13 @@
 // Draws one resolved frame. Everything is expressed relative to the canvas
 // size, so the same draft renders identically at any export resolution.
 
-import { adjustFilter } from '../model/adjust'
+import { adjustFilter, isNeutral } from '../model/adjust'
+import { blendOperation } from '../model/blend'
 import { BLUR_RADIUS_PER_UNIT } from '../model/background'
 import { cropRect, type CropRect } from '../model/crop'
-import { maskShape, type MaskShape } from '../model/mask'
+import { maskShape, outline, type MaskShape } from '../model/mask'
 import type { CanvasBackground, Clip } from '../model/types'
-import type { VisualLayer } from './resolve'
+import type { MediaLayer, VisualLayer } from './resolve'
 import { drawText } from './text'
 
 export type FrameImage = { image: CanvasImageSource; width: number; height: number }
@@ -110,9 +111,38 @@ function fillMask(ctx: Ctx, shape: MaskShape, far: number) {
     case 'rectangle':
       ctx.roundRect(-shape.width / 2, -shape.height / 2, shape.width, shape.height, shape.radius)
       break
+    case 'heart':
+    case 'star': {
+      const points = outline(shape.type, shape.width, shape.height)
+      points.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)))
+      ctx.closePath()
+      break
+    }
   }
   ctx.fillStyle = '#fff'
   ctx.fill()
+}
+
+// The timeline inside a compound clip, drawn on a canvas of its own (one per
+// compound clip on screen, kept between frames) and then used as that clip's
+// picture. Where nothing inside covers it, it is see-through.
+const nestedCanvases = new Map<string, OffscreenCanvas>()
+
+function drawNested(
+  layer: MediaLayer,
+  getImage: (layer: MediaLayer) => FrameImage | null,
+): FrameImage | null {
+  const nested = layer.nested
+  if (!nested || nested.width <= 0 || nested.height <= 0) return null
+  let canvas = nestedCanvases.get(layer.key)
+  if (!canvas || canvas.width !== nested.width || canvas.height !== nested.height) {
+    canvas = new OffscreenCanvas(nested.width, nested.height)
+    nestedCanvases.set(layer.key, canvas)
+  }
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  drawFrame(ctx, nested.width, nested.height, nested.frame.visual, getImage, false)
+  return { image: canvas, width: canvas.width, height: canvas.height }
 }
 
 export function drawFrame(
@@ -121,13 +151,36 @@ export function drawFrame(
   height: number,
   layers: VisualLayer[],
   getImage: (layer: Extract<VisualLayer, { kind: 'media' }>) => FrameImage | null,
+  // Black behind everything; off for the inside of a compound clip.
+  opaque = true,
 ) {
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.globalAlpha = 1
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, width, height)
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.filter = 'none'
+  if (opaque) {
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, width, height)
+  } else {
+    ctx.clearRect(0, 0, width, height)
+  }
 
   for (const layer of layers) {
+    if (layer.kind === 'adjust') {
+      if (isNeutral(layer.adjust)) continue
+      // The frame so far is copied aside and drawn back through the filter.
+      const copy = scratchFor(width, height)
+      if (!copy) continue
+      copy.drawImage(ctx.canvas, 0, 0)
+      ctx.save()
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.globalAlpha = 1
+      ctx.globalCompositeOperation = 'copy'
+      ctx.filter = adjustFilter(layer.adjust)
+      ctx.drawImage(copy.canvas, 0, 0)
+      ctx.restore()
+      continue
+    }
     const { clip } = layer
     const fx = layer.kind === 'media' ? layer.fx : null
     ctx.save()
@@ -147,7 +200,7 @@ export function drawFrame(
       continue
     }
 
-    const image = getImage(layer)
+    const image = layer.nested ? drawNested(layer, getImage) : getImage(layer)
     const frame = image && image.width > 0 && image.height > 0 ? image : null
     const crop = cropRect(layer.material.crop)
     if (layer.segment.canvas) {
@@ -161,6 +214,9 @@ export function drawFrame(
     const target = masked ?? ctx
     applyClip(target, masked ? { ...clip, alpha: 1 } : clip, width, height)
     if (fx && !masked) ctx.globalAlpha *= fx.alpha
+    // The blend applies to the clip's picture as it goes onto the frame.
+    const blend = blendOperation(layer.segment.mix_mode)
+    if (!masked) ctx.globalCompositeOperation = blend
     if (frame) {
       // Colour adjustment applies to the clip's picture, not to what is behind it.
       target.filter = adjustFilter(layer.adjust)
@@ -192,6 +248,7 @@ export function drawFrame(
         masked.filter = soft > 0.05 ? `blur(${soft}px)` : 'none'
         fillMask(masked, shape, (width + height) * 100)
         ctx.globalAlpha = Math.min(1, Math.max(0, clip.alpha)) * (fx ? fx.alpha : 1)
+        ctx.globalCompositeOperation = blend
         ctx.drawImage(masked.canvas, 0, 0)
       }
     }

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { markIn, markOut } from './model/exportRange'
 import { frameDuration } from './model/time'
-import { useEditor } from './state/store'
+import { rootDraft, useEditor } from './state/store'
 import { ExportDialog } from './ui/ExportDialog'
+import { ProjectsDialog } from './ui/ProjectsDialog'
 import { Inspector } from './ui/Inspector'
 import { MediaBin } from './ui/MediaBin'
 import { Preview } from './ui/Preview'
@@ -57,8 +58,10 @@ function download(name: string, blob: Blob) {
 
 export default function App() {
   const warnings = useEditor((s) => s.warnings)
-  const name = useEditor((s) => s.draft.name)
+  const name = useEditor((s) => (s.compoundStack.length ? s.compoundStack[0].draft.name : s.draft.name))
+  const inside = useEditor((s) => s.compoundStack)
   const [exporting, setExporting] = useState(false)
+  const [browsing, setBrowsing] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
   const openRef = useRef<HTMLInputElement>(null)
 
@@ -83,7 +86,7 @@ export default function App() {
   }
 
   const save = () => {
-    const { draft } = useEditor.getState()
+    const draft = rootDraft(useEditor.getState())
     const json = JSON.stringify(draft, null, 2)
     download(`${draft.name || 'project'}.cupcut.json`, new Blob([json], { type: 'application/json' }))
   }
@@ -92,7 +95,23 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>CupCut</h1>
-        <span className="project-name">{name}</span>
+        <input
+          key={name}
+          className="project-name"
+          aria-label="Project name"
+          defaultValue={name}
+          onBlur={(e) => {
+            useEditor.getState().renameProject(e.target.value)
+            e.target.value = useEditor.getState().draft.name
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+            if (e.key === 'Escape') {
+              e.currentTarget.value = name
+              e.currentTarget.blur()
+            }
+          }}
+        />
         <div className="header-actions">
           <input
             ref={openRef}
@@ -101,6 +120,9 @@ export default function App() {
             hidden
             onChange={(e) => void openFile(e.target.files?.[0])}
           />
+          <button type="button" title="Projects kept in this browser" onClick={() => setBrowsing(true)}>
+            Projects
+          </button>
           <button type="button" onClick={() => useEditor.getState().newProject()}>
             New
           </button>
@@ -120,6 +142,17 @@ export default function App() {
         </div>
       </header>
 
+      {inside.length > 0 && (
+        <div className="banner compound-banner" role="status">
+          <span>
+            Editing inside {inside.map((l) => l.name).join(' › ')}. Changes go into the compound
+            clip.
+          </span>
+          <button type="button" className="primary" onClick={() => useEditor.getState().leaveCompound()}>
+            Back to {inside.length > 1 ? inside[inside.length - 2].name : 'main timeline'}
+          </button>
+        </div>
+      )}
       {openError && (
         <div className="banner error" role="alert">
           <span>Could not open file: {openError}</span>
@@ -152,6 +185,7 @@ export default function App() {
       <Timeline />
 
       {exporting && <ExportDialog onClose={() => setExporting(false)} />}
+      {browsing && <ProjectsDialog onClose={() => setBrowsing(false)} />}
     </div>
   )
 }

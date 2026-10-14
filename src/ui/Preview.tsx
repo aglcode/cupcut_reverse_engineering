@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { drawFrame } from '../engine/compositor'
 import { PreviewMedia } from '../engine/previewMedia'
 import { resolveFrame } from '../engine/resolve'
@@ -12,6 +12,8 @@ import {
 import { formatTimecode } from '../model/time'
 import type { Draft } from '../model/types'
 import { useEditor } from '../state/store'
+import { CropEditor } from './CropEditor'
+import { MaskOverlay } from './MaskOverlay'
 
 function Timecode() {
   const playhead = useEditor((s) => s.playhead)
@@ -66,6 +68,26 @@ export function Preview() {
   const height = useEditor((s) => s.draft.canvas_config.height)
   const playing = useEditor((s) => s.playing)
   const setPlaying = useEditor((s) => s.setPlaying)
+  const cropEditing = useEditor((s) => s.cropEditing)
+  // Where the canvas shows on screen, for the handles laid over it.
+  const [shown, setShown] = useState({ left: 0, top: 0, width: 0, height: 0 })
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const measure = () =>
+      setShown({
+        left: canvas.offsetLeft,
+        top: canvas.offsetTop,
+        width: canvas.clientWidth,
+        height: canvas.clientHeight,
+      })
+    const watch = new ResizeObserver(measure)
+    watch.observe(canvas)
+    if (canvas.parentElement) watch.observe(canvas.parentElement)
+    measure()
+    return () => watch.disconnect()
+  }, [width, height])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -119,6 +141,10 @@ export function Preview() {
     <section className="preview" aria-label="Preview">
       <div className="preview-stage">
         <canvas ref={canvasRef} width={width} height={height} />
+        <div className="preview-overlay" style={shown}>
+          <MaskOverlay size={shown} />
+        </div>
+        {cropEditing && <CropEditor segmentId={cropEditing} />}
       </div>
       <div className="transport">
         <button type="button" className="primary" onClick={() => setPlaying(!playing)}>

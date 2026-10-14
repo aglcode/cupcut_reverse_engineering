@@ -47,13 +47,45 @@ Suggested next batch, on the same basis:
 - [x] 22. Save an export straight to a chosen file
 - [x] 23. Drag the ends of the export range on the ruler
 
+Suggested next batch, on the same basis:
+
+- [x] 24. Blend modes
+- [x] 25. Interactive crop box on the preview, with ratio presets
+- [x] 26. Move, size and turn a mask by dragging on the preview
+- [x] 27. Several saved projects with a project list
+- [x] 28. Compound clips (nested timelines)
+
+Suggested next batch, on the same basis:
+
+- [x] 29. A compound clip's own volume and fades on its sound; break apart sped-up compound clips
+- [x] 30. Thumbnails on compound clips, and media kept per project
+- [x] 31. Drag fade and animation lengths on the clip
+- [x] 32. Adjustment layers
+- [x] 33. Load other fonts
+
+Checked against CapCut 9.4's own interface text (`VECreator.dll`) and fixed
+where this editor differed:
+
+- [x] 34. Track header as in CapCut: Lock, Hide track clips and Mute (no remove button)
+- [x] 35. Tracks as in CapCut: no "Add track" buttons; dragging a clip above the top track (below the bottom one, for sound) makes a track, and an emptied track goes
+- [x] 36. Heart and Star masks
+- [x] 37. Only CapCut's own speed presets (the invented "Speed up" and "Slow down" are gone)
+
 ## Done
 
+- [x] Adjustment layers: a clip on its own track that recolours everything beneath it, keyframeable
+- [x] Fonts: import font files (CapCut text finds its font by file name), and list the fonts installed on this computer where the browser allows
+- [x] Fade and animation lengths dragged on the selected clip
+- [x] Compound clips: fold clips into one, edit inside it, break it apart; imported from CapCut drafts
+- [x] Several projects kept in the browser, with a project list (open, rename, delete)
+- [x] Crop box on the preview with ratio presets, and mask handles on the preview
+- [x] Blend modes (Darken, Multiply, Color Burn, Lighten, Screen, Color Dodge, Overlay, Soft Light, Hard Light), imported from CapCut drafts
 - [x] Export straight to a file you pick, where the browser has a save dialog for web pages
 - [x] The ends of the export range can be dragged on the ruler, with snapping
 - [x] In and out animations on clips and titles (fade, four slides, two zooms), with CapCut's Fade In and Fade Out imported
-- [x] Masks: Split, Mirror, Circle and Rectangle, with position, size, rotation, feather, round corners and invert, all keyframeable, imported from CapCut drafts
-- [x] Speed ramps: CapCut's Hero and Bullet curves, custom curves on a graph, imported from CapCut drafts with their timing intact
+- [x] Track Lock, Hide and Mute, kept in CapCut's track `attribute`, and empty tracks removed as CapCut does
+- [x] Masks: Split, Mirror, Circle, Rectangle, Heart and Star, with position, size, rotation, feather, round corners and invert, all keyframeable, imported from CapCut drafts
+- [x] Speed ramps: CapCut's Hero and Bullet curves (its only ones found locally), custom curves on a graph, imported from CapCut drafts with their timing intact
 - [x] Exports are written to disk as they are encoded, with sound decoded and mixed ten seconds at a time
 
 - [x] Draft model in CapCut's shape (tracks, segments, materials, microsecond time)
@@ -98,7 +130,10 @@ Suggested next batch, on the same basis:
 - [x] Drag keyframes along the clip to retime them
 - [ ] Copy and paste keyframes
 - [x] Speed ramps (curve presets such as "Bullet" and "Hero"), with a graph to edit them
-- [ ] CapCut's other ramp presets (only Hero and Bullet appear in the local drafts)
+- [ ] CapCut's other ramp presets, Montage, Jump Cut, Flash In and Flash Out (named in CapCut, but their curves are downloaded only when used and no local draft uses them; a draft that does would give them)
+- [ ] Confirm which bit of a track's `attribute` is lock, hide and mute (0 on every local track; mute as 1 follows common report)
+- [ ] Main-track cover (CapCut's main track has a Cover button)
+- [ ] Decide on the adjustment layer: CapCut's engine names an adjust_track, but no adjustment-layer label was found in its interface text
 - [ ] Confirm how CapCut plays a ramp on a reversed clip (no local example; the ramp is taken to run in playing order)
 - [ ] Preview keeps closer to a steep ramp while playing (it can trail by about a third of a second; paused frames and the export are exact)
 - [ ] A linked clip follows a speed or ramp change made to its partner (extracting audio copies the ramp, later changes are not shared)
@@ -114,21 +149,31 @@ Suggested next batch, on the same basis:
 - [x] In and out animations on clips and text
 - [ ] Loop and combo animations (CapCut `loop` and `group`; reported and left out on import)
 - [ ] More animation looks (CapCut's own are effect bundles; other imported looks become a fade of the same length)
-- [ ] Drag an animation's length on the clip (currently a numeric field)
+- [x] Drag an animation's length on the clip
 - [x] Crop, flip and mirror (mirror is the horizontal flip)
-- [ ] Interactive crop box on the preview, with aspect-ratio presets (1:1, 9:16 and so on); currently numeric fields
+- [x] Interactive crop box on the preview, with aspect-ratio presets (1:1, 9:16 and so on)
+- [ ] Crop box for a compound clip (it shows no picture to crop against; the numeric fields work)
 - [ ] Rotated crops (imported as their upright bounding box)
 - [ ] Confirm against CapCut how a cropped clip is sized, and what `crop_scale` does
 - [x] Masks: Split, Mirror, Circle and Rectangle
+- [x] Heart and Star masks (CapCut names pc_mask_heart and pc_mask_star; the outlines here are this editor's own)
 - [ ] Mask stroke and shadow (CapCut has keyframe properties for both)
-- [ ] More mask shapes (heart, star, text, drawn outline) and CapCut's `expansion` setting
-- [ ] Move, size and turn a mask by dragging on the preview (currently numeric fields)
+- [ ] Text and pen (drawn outline) masks, and CapCut's `expansion` setting
+- [x] Move, size and turn a mask by dragging on the preview
 - [ ] Confirm against CapCut the mask's centre units, rotation direction, feather strength and which side a Split shows (all zero or default in the two local examples)
 - [x] Canvas background: colour or blurred picture behind a clip
 - [ ] Image as a canvas background (CapCut `canvas_image`; imported without it)
 - [ ] Apply one background to every clip at once
 - [ ] Confirm the scale of the CapCut blur value (no local draft sets a background)
-- [ ] Compound clips (nested timelines)
+- [x] Compound clips (nested timelines)
+- [x] The compound clip's own volume, volume keyframes and fades on its sound
+- [ ] Sound of a reversed, frozen or ramped compound clip (it is silent)
+- [x] Break apart a sped-up compound clip (its clips are sped up to match)
+- [ ] Break apart a reversed, frozen or ramped compound clip
+- [ ] Keep a compound clip's own settings (position, effects, fades) when it is broken apart
+- [x] Thumbnails on a compound clip
+- [ ] Waveform on a compound clip
+- [ ] Confirm how CapCut numbers and names compound clips, and how it breaks one apart (one local example, never broken apart)
 - [ ] Multi-camera editing
 - [x] Multi-select: Ctrl/Shift-click, box selection, Ctrl+A; move and delete several clips at once
 - [ ] Move a group of clips to other tracks (a group currently moves in time only)
@@ -167,7 +212,9 @@ Suggested next batch, on the same basis:
 - [x] Basic colour adjustment: brightness, contrast, saturation, with keyframes and easing
 - [ ] More adjustments CapCut has: temperature, hue, highlights, shadows, sharpen, vignette, fade
 - [ ] Calibrate brightness and contrast strength against CapCut (only saturation -1 is pinned down by a real draft)
-- [ ] Adjustment as its own timeline layer covering several clips (CapCut has adjust tracks)
+- [x] Adjustment as its own timeline layer covering several clips
+- [ ] Import CapCut adjustment layers (none in the local drafts; the engine names an adjust_track)
+- [ ] CapCut's filter tracks (preset filters are CapCut's own LUT bundles)
 - [ ] Thumbnails that reflect the adjustment
 - [ ] HSL adjustment
 - [ ] Colour curves
@@ -176,14 +223,17 @@ Suggested next batch, on the same basis:
 - [ ] Colour match
 - [ ] HDR handling and colour-space management
 - [ ] Stickers and overlays `*`
-- [ ] Blend modes `*`
+- [x] Blend modes
+- [ ] CapCut's "Linear Burn" blend (no canvas equivalent), and what its `value` does (always 1 locally)
 - [ ] Chroma key
 - [ ] Background removal
 
 ## Text
 
 - [x] Font selection from fonts installed with the operating system
-- [ ] Load other fonts (font files, or the fonts installed on this computer); CapCut's own fonts cannot be loaded
+- [x] Load other fonts: font files, and the fonts installed on this computer (Chromium, after a permission prompt)
+- [ ] Try "List fonts on this computer…" in a real browser (it needs a permission prompt, which a headless browser cannot answer)
+- [ ] CapCut's bold_width and italic_degree (bold and italic here are on or off)
 - [x] Stroke and shadow
 - [x] Background box
 - [x] Letter spacing, line spacing and alignment
@@ -200,7 +250,7 @@ Suggested next batch, on the same basis:
 
 - [x] Fades: fade in and fade out per clip
 - [ ] Confirm CapCut's fade curve and time base against a draft that uses fades (none available locally; linear and timeline time assumed)
-- [ ] Drag fade handles on the clip
+- [x] Drag fade handles on the clip
 - [ ] Audio effects and voice changers
 - [ ] Loudness normalisation
 - [ ] Noise reduction
@@ -248,9 +298,11 @@ Suggested next batch, on the same basis:
 - [ ] Cloud drafts, sync, team spaces and accounts
 - [x] Project persistence: the current project autosaves and imported media is kept in browser storage
 - [ ] Link to media files on disk instead of copying them into browser storage (needs the native file picker and a permission prompt per session; not testable headlessly)
-- [ ] Several saved projects with a project list (only the current project is kept)
+- [x] Several saved projects with a project list
+- [ ] Cover pictures in the project list (CapCut keeps a draft_cover)
+- [x] Media kept per project: each lists its own files; a file is only taken out of storage when no project has it
 - [ ] Keep undo history across a reload
-- [ ] Clear out stored media that no project uses (files are removed one at a time, by hand)
+- [x] Clear out stored media that no project uses (done when a project is deleted)
 - [ ] Writing drafts back to CapCut (import is one-way)
 - [ ] Screen and webcam recording
 

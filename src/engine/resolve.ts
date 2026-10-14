@@ -5,6 +5,8 @@ import { evalAdjust } from '../model/adjust'
 import { animateClip } from '../model/animations'
 import { fadeGain } from '../model/fades'
 import { evalClip, evalVolume, isAnimated } from '../model/keyframes'
+import { soundsInside } from '../model/compound'
+import { isHidden, isMuted } from '../model/tracks'
 import { evalMask } from '../model/mask'
 import { sourceTimeAt, speedAtTime } from '../model/timing'
 import {
@@ -26,6 +28,10 @@ import {
 
 export type MediaLayer = {
   kind: 'media'
+  // Names this layer uniquely, also inside compound clips, where the same
+  // clip can show twice: the segment id, after the ids of the compound clips
+  // it is inside, joined by "/".
+  key: string
   segment: Segment
   clip: Clip
   adjust: Adjust
@@ -38,11 +44,16 @@ export type MediaLayer = {
   span: { from: number; to: number }
   // Set while a transition is running.
   fx: LayerFx | null
+  // For a compound clip: what its own timeline shows at this instant, and
+  // that timeline's canvas size.
+  nested: { frame: ResolvedFrame; width: number; height: number } | null
 }
 
 export type VisualLayer =
   | MediaLayer
   | { kind: 'text'; segment: Segment; clip: Clip; material: TextMaterial }
+  // An adjustment layer: recolours everything drawn before it.
+  | { kind: 'adjust'; segment: Segment; adjust: Adjust }
 
 export type AudioLayer = {
   segment: Segment
@@ -67,13 +78,16 @@ export function mediaSourceTime(s: Segment, material: VideoMaterial, t: number):
   return Math.min(Math.max(0, sourceTime(s, t)), Math.max(0, material.duration - 1))
 }
 
-export type AudibleSegment = { segment: Segment; path: string }
+// `gain`, for a sound from inside a compound clip, is the compound clip's own
+// volume and fades at timeline time t (and those of any compound clip around
+// it), applied on top of the sound's own.
+export type AudibleSegment = { segment: Segment; path: string; gain?: (t: number) => number }
 
 // Every segment that carries sound: audio clips, and video clips with audio.
 export function audibleSegments(draft: Draft): AudibleSegment[] {
   const out: AudibleSegment[] = []
   for (const track of draft.tracks) {
-    if (track.type === 'text') continue
+    if (track.type === 'text' || track.type === 'adjust' || isMuted(track)) continue
     for (const segment of track.segments) {
       // A freeze frame is a still picture and has no sound.
       if (segment.freeze) continue
@@ -84,18 +98,39 @@ export function audibleSegments(draft: Draft): AudibleSegment[] {
         if (m) out.push({ segment, path: m.path })
       } else {
         const m = draft.materials.videos.find((v) => v.id === segment.material_id)
-        if (m && m.type === 'video' && m.has_audio) out.push({ segment, path: m.path })
+        if (m?.compound) {
+          // The sound of a compound clip is that of the clips inside it.
+          const inside = audibleSegments(m.compound)
+          const src = segment.source_timerange
+          const outer = segment
+          // Inner timeline time at outer time t (only mapped while the speed is constant).
+          const innerAt = (t: number) => (src ? src.start + (t - outer.target_timerange.start) * outer.speed : 0)
+          for (const mapped of soundsInside(segment, inside.map((a) => a.segment))) {
+            const from = inside.find((a) => mapped.id === `${segment.id}/${a.segment.id}`)
+            if (!from) continue
+            const deeper = from.gain
+            const gain = (t: number) =>
+              evalVolume(outer, t) * fadeGain(outer, t) * (deeper ? deeper(innerAt(t)) : 1)
+            out.push({ segment: mapped, path: from.path, gain })
+          }
+        } else if (m && m.type === 'video' && m.has_audio) out.push({ segment, path: m.path })
       }
     }
   }
   return out
 }
 
-export function resolveFrame(draft: Draft, t: number): ResolvedFrame {
+// `prefix` is the key path of the compound clip this timeline is inside.
+export function resolveFrame(draft: Draft, t: number, prefix = ''): ResolvedFrame {
   const visual: VisualLayer[] = []
   // Track order is render order, bottom first.
   for (const track of draft.tracks) {
-    if (track.type === 'audio') continue
+    if (track.type === 'audio' || isHidden(track)) continue
+    if (track.type === 'adjust') {
+      const segment = track.segments.find((s) => isActive(s, t))
+      if (segment && segment.visible) visual.push({ kind: 'adjust', segment, adjust: evalAdjust(segment, t) })
+      continue
+    }
     if (track.type === 'text') {
       const segment = track.segments.find((s) => isActive(s, t))
       if (!segment || !segment.visible) continue
@@ -119,28 +154,55 @@ export function resolveFrame(draft: Draft, t: number): ResolvedFrame {
       let fx: LayerFx | null = null
       if (incoming && t < incoming.to) fx = transitionFx(incoming.name, 'in', progress(incoming))
       else if (outgoing && t >= outgoing.from) fx = transitionFx(outgoing.name, 'out', progress(outgoing))
+      const sourceUs = mediaSourceTime(segment, material, t)
+      const key = prefix + segment.id
+      const inner = material.compound
       visual.push({
         kind: 'media',
+        key,
         segment,
         clip: animateClip(segment, evalClip(segment, t), t),
         adjust: evalAdjust(segment, t),
         mask: evalMask(segment, t),
         material,
-        sourceUs: mediaSourceTime(segment, material, t),
+        sourceUs,
         speed: speedAtTime(segment, t),
         span,
         fx,
+        nested: inner
+          ? {
+              frame: resolveFrame(inner, sourceUs, key + '/'),
+              width: inner.canvas_config.width,
+              height: inner.canvas_config.height,
+            }
+          : null,
       })
     })
   }
   const audio = audibleSegments(draft)
     .filter(({ segment }) => isActive(segment, t))
-    .map(({ segment, path }) => ({
+    .map(({ segment, path, gain }) => ({
       segment,
       path,
       sourceUs: sourceTime(segment, t),
       speed: speedAtTime(segment, t),
-      volume: evalVolume(segment, t) * fadeGain(segment, t),
+      volume: evalVolume(segment, t) * fadeGain(segment, t) * (gain ? gain(t) : 1),
     }))
   return { visual, audio }
+}
+
+// Every picture clip in a frame, including those inside compound clips, each
+// with the top-level layer it is drawn as part of. Compound clips themselves
+// are left out: they have no media of their own.
+export function mediaLayersOf(
+  frame: ResolvedFrame,
+  top?: MediaLayer,
+): { layer: MediaLayer; top: MediaLayer }[] {
+  const out: { layer: MediaLayer; top: MediaLayer }[] = []
+  for (const layer of frame.visual) {
+    if (layer.kind !== 'media') continue
+    if (layer.nested) out.push(...mediaLayersOf(layer.nested.frame, top ?? layer))
+    else out.push({ layer, top: top ?? layer })
+  }
+  return out
 }

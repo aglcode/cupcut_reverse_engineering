@@ -19,7 +19,9 @@ export const MIN_CURVE_SPEED = 0.1
 export const MAX_CURVE_SPEED = 10
 
 // Hero and Bullet are CapCut's presets as found, untouched, in local drafts.
-// The other two are this editor's own.
+// CapCut also has Montage, Jump Cut, Flash In and Flash Out (its interface
+// text and engine name them), but no local draft uses them and their curves
+// are downloaded only when used, so they are not offered here.
 export const SPEED_PRESETS: SpeedCurve[] = [
   {
     name: 'Hero',
@@ -41,22 +43,6 @@ export const SPEED_PRESETS: SpeedCurve[] = [
       { x: 0.54, y: 0.5 },
       { x: 0.6, y: 5.2 },
       { x: 1, y: 5.2 },
-    ],
-  },
-  {
-    name: 'Speed up',
-    speed_points: [
-      { x: 0, y: 0.5 },
-      { x: 0.5, y: 1 },
-      { x: 1, y: 4 },
-    ],
-  },
-  {
-    name: 'Slow down',
-    speed_points: [
-      { x: 0, y: 4 },
-      { x: 0.5, y: 1 },
-      { x: 1, y: 0.5 },
     ],
   },
 ]

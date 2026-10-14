@@ -5,8 +5,9 @@
 // own definition and will not match CapCut exactly.
 //
 // font_family, bold and italic are not CapCut fields: CapCut points at a
-// downloaded font file and stores weight and slant as bold_width and
-// italic_degree, neither of which can be reproduced here.
+// font file (font_path) and stores weight and slant as bold_width and
+// italic_degree. A CapCut text is given the family of its font file's name,
+// so it draws in that font once the same file is imported here.
 
 import type { TextStyle } from './types'
 
@@ -28,6 +29,13 @@ export const FONT_FAMILIES: { label: string; value: string }[] = [
   { label: 'Courier New', value: '"Courier New", Courier, monospace' },
   { label: 'Comic Sans', value: '"Comic Sans MS", cursive' },
 ]
+
+// A font_family value for a family by name, falling back to the default.
+export const familyValue = (family: string): string =>
+  `"${family.replace(/"/g, '')}", ${DEFAULT_FONT}`
+
+// The family a font_family value asks for first, without quotes.
+export const firstFamily = (value: string): string => value.split(',')[0].trim().replace(/^["']|["']$/g, '')
 
 export const DEFAULT_TEXT_STYLE: TextStyle = {
   font_family: DEFAULT_FONT,

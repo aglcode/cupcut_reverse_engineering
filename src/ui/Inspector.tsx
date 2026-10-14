@@ -11,7 +11,7 @@ import {
   effectiveAnimations,
   setAnimation,
 } from '../model/animations'
-import { cropInsets, isCropped, setCrop } from '../model/crop'
+import { CROP_RATIOS, cropInsets, cropRatioOf, isCropped, setCrop, setCropRatio, type CropRatio } from '../model/crop'
 import { effectiveFade, setFade } from '../model/fades'
 import { EASINGS, type EasingName } from '../model/easing'
 import { isOneLink, linkedIds, linkSegments, unlinkSegments } from '../model/links'
@@ -25,7 +25,9 @@ import {
   setKeyframes,
   setValues,
 } from '../model/keyframes'
-import { MASK_TYPES, setMask, setMaskInvert } from '../model/mask'
+import { BLEND_MODES, setBlend, type BlendName } from '../model/blend'
+import { canBreakApart } from '../model/compound'
+import { MASK_TYPES, maskKind, setMask, setMaskInvert, type MaskKind } from '../model/mask'
 import {
   findMaterial,
   findSegment,
@@ -48,7 +50,7 @@ import {
   setTransition,
   TRANSITIONS,
 } from '../model/transitions'
-import type { Draft, KeyframeProperty, MaskType, Segment, TransitionName } from '../model/types'
+import type { Draft, KeyframeProperty, Segment, TransitionName } from '../model/types'
 import { useEditor } from '../state/store'
 import { SpeedCurveEditor } from './SpeedCurveEditor'
 import { TextStyleFields } from './TextStyleFields'
@@ -281,12 +283,14 @@ export function Inspector() {
       ? segment.curve_speed.name
       : 'Custom'
   const isVideo = material !== null && material.type === 'video' && !segment.freeze
-  const canExtract = isVideo && (segment.volume > 0 || isAnimated(segment, 'KFTypeVolume'))
+  const compound = material !== null && material.type === 'video' && !!material.compound
+  const canExtract =
+    isVideo && !compound && (segment.volume > 0 || isAnimated(segment, 'KFTypeVolume'))
   const extract = () => {
     const made = extractAudio(draft, segment.id)
     if (made) commit(made.draft)
   }
-  const maskType = segment.mask?.resource_type ?? null
+  const maskType = segment.mask ? maskKind(segment.mask) : null
   const animations = effectiveAnimations(segment)
   const linkedCount = linkedIds(draft, segment.id).length
   const onKeyframe = segment.common_keyframes.some((k) =>
@@ -306,7 +310,18 @@ export function Inspector() {
 
   return (
     <aside className="inspector" aria-label="Inspector">
-      <h2>{track.type === 'text' ? 'Text' : track.type === 'audio' ? 'Audio clip' : 'Video clip'}</h2>
+      <h2>
+        {track.type === 'text'
+          ? 'Text'
+          : track.type === 'audio'
+            ? 'Audio clip'
+            : track.type === 'adjust'
+              ? 'Adjustment layer'
+              : 'Video clip'}
+      </h2>
+      {track.type === 'adjust' && (
+        <p className="hint">Changes the colour of everything beneath it while it lasts.</p>
+      )}
       <p className="hint">
         {formatTimecode(segment.target_timerange.start, draft.fps)} –{' '}
         {formatTimecode(
@@ -454,7 +469,26 @@ export function Inspector() {
           >
             Freeze frame at playhead
           </button>
-          {material.has_audio && (
+          {compound && (
+            <>
+              <button type="button" onClick={() => useEditor.getState().enterCompound(segment.id)}>
+                Edit inside
+              </button>
+              <button
+                type="button"
+                disabled={!canBreakApart(draft, segment.id)}
+                title={
+                  canBreakApart(draft, segment.id)
+                    ? 'Put the clips inside back on the timeline'
+                    : 'A reversed, frozen or ramped compound clip cannot be broken apart'
+                }
+                onClick={() => useEditor.getState().breakApartSelected()}
+              >
+                Break apart
+              </button>
+            </>
+          )}
+          {material.has_audio && !compound && (
             <button
               type="button"
               disabled={!canExtract}
@@ -545,6 +579,24 @@ export function Inspector() {
             keyframe={toggle('opacity', 'KFTypeAlpha')}
             onCommit={(v) => set({ KFTypeAlpha: Math.min(100, Math.max(0, v)) / 100 })}
           />
+          {visual && (
+            <label className="field">
+              <span>Blend</span>
+              <select
+                value={segment.mix_mode ?? ''}
+                onChange={(e) =>
+                  commit(setBlend(draft, segment.id, (e.target.value || null) as BlendName | null))
+                }
+              >
+                <option value="">Normal</option>
+                {BLEND_MODES.map((b) => (
+                  <option key={b.name} value={b.name}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {visual && (
             <div className="checks" role="group" aria-label="Flip">
               <span>Flip</span>
@@ -690,7 +742,7 @@ export function Inspector() {
         </>
       )}
 
-      {visual && (
+      {(visual || track.type === 'adjust') && (
         <>
           <h2>Colour</h2>
           <NumberField
@@ -727,14 +779,14 @@ export function Inspector() {
           <label className="field">
             <span>Shape</span>
             <select
-              value={segment.mask?.resource_type ?? ''}
+              value={maskType ?? ''}
               onChange={(e) =>
-                commit(setMask(draft, segment.id, (e.target.value || null) as MaskType | null))
+                commit(setMask(draft, segment.id, (e.target.value || null) as MaskKind | null))
               }
             >
               <option value="">None</option>
               {MASK_TYPES.map((m) => (
-                <option key={m.type} value={m.type}>
+                <option key={m.kind} value={m.kind}>
                   {m.name}
                 </option>
               ))}
@@ -742,7 +794,7 @@ export function Inspector() {
           </label>
           {segment.mask && (
             <>
-              {(maskType === 'circle' || maskType === 'rectangle') && (
+              {(maskType === 'circle' || maskType === 'rectangle' || maskType === 'heart' || maskType === 'star') && (
                 <NumberField
                   label="Width"
                   value={value('KFTypeCommonMaskSizeWidth') * 100}
@@ -884,6 +936,22 @@ export function Inspector() {
       {insets && visual && (
         <>
           <h2>Crop</h2>
+          <label className="field">
+            <span>Ratio</span>
+            <select
+              value={cropRatioOf(material)}
+              onChange={(e) => commit(setCropRatio(draft, segment.id, e.target.value as CropRatio))}
+            >
+              {CROP_RATIOS.map((r) => (
+                <option key={r} value={r}>
+                  {r === 'free' ? 'Free' : r}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" onClick={() => useEditor.getState().setCropEditing(segment.id)}>
+            Crop on the preview…
+          </button>
           <NumberField label="Left" value={insets.left * 100} min={0} max={99} suffix="%" onCommit={crop('left')} />
           <NumberField label="Right" value={insets.right * 100} min={0} max={99} suffix="%" onCommit={crop('right')} />
           <NumberField label="Top" value={insets.top * 100} min={0} max={99} suffix="%" onCommit={crop('top')} />

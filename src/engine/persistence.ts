@@ -1,9 +1,17 @@
-// Keeps the project and its media between sessions.
+// Keeps projects and their media between sessions.
 //
 // CapCut reopens a draft by reading each material's absolute path from disk.
-// A web page cannot, so the current project and a copy of every imported file
-// are kept in the browser's IndexedDB and put back when the page loads.
-// The copies count against the browser's storage quota for this site.
+// A web page cannot, so every project and a copy of every imported file are
+// kept in the browser's IndexedDB, and the one last open is put back when the
+// page loads. The copies count against the browser's storage quota for this
+// site. Media is one pool shared by all projects, keyed by file name.
+//
+// CapCut lists its drafts in root_meta_info.json, one entry per draft under
+// all_draft_store with draft_id, draft_name, tm_draft_create,
+// tm_draft_modified (microseconds since 1970) and tm_duration. A project's
+// entry here carries the same fields.
+
+import type { Draft } from '../model/types'
 
 const DB_NAME = 'cupcut'
 const DB_VERSION = 1
@@ -12,7 +20,23 @@ const PROJECT = 'project'
 const CURRENT = 'current'
 
 type StoredMedia = { key: string; file: File }
-type StoredProject = { json: string; savedAt: number }
+export type ProjectSummary = {
+  draft_id: string
+  draft_name: string
+  tm_draft_create: number
+  tm_draft_modified: number
+  tm_duration: number
+  // Keys of the files imported into this project, as CapCut lists a draft's
+  // imported files under draft_materials in draft_meta_info.json. Missing on
+  // projects saved before media was kept per project; those count as having
+  // every file.
+  media?: string[]
+}
+type StoredProject = ProjectSummary & { json: string }
+// What is kept under CURRENT: which project is open. Before there were several
+// projects, the project itself was kept there, as { json, savedAt }.
+type CurrentPointer = { draft_id: string }
+type OldCurrent = { json: string; savedAt: number }
 
 let opening: Promise<IDBDatabase> | null = null
 
@@ -47,13 +71,93 @@ async function run<T>(
   })
 }
 
-export const saveProject = (json: string): Promise<unknown> =>
-  run(PROJECT, 'readwrite', (s) => s.put({ json, savedAt: Date.now() } satisfies StoredProject, CURRENT))
+const nowUs = () => Date.now() * 1000
 
-export async function loadProject(): Promise<string | null> {
-  const stored = await run<StoredProject | undefined>(PROJECT, 'readonly', (s) => s.get(CURRENT))
-  return stored?.json ?? null
+const summaryOf = (p: StoredProject): ProjectSummary => ({
+  draft_id: p.draft_id,
+  draft_name: p.draft_name,
+  tm_draft_create: p.tm_draft_create,
+  tm_draft_modified: p.tm_draft_modified,
+  tm_duration: p.tm_duration,
+  media: p.media,
+})
+
+// Saves a project under its own id and makes it the one that opens next time.
+export async function saveProject(draft: Draft, media?: string[]): Promise<ProjectSummary> {
+  const existing = await run<StoredProject | undefined>(PROJECT, 'readonly', (s) => s.get(draft.id))
+  const stored: StoredProject = {
+    draft_id: draft.id,
+    draft_name: draft.name,
+    tm_draft_create: existing?.tm_draft_create ?? nowUs(),
+    tm_draft_modified: nowUs(),
+    tm_duration: draft.duration,
+    media: media ?? existing?.media,
+    json: JSON.stringify(draft),
+  }
+  await run(PROJECT, 'readwrite', (s) => s.put(stored, draft.id))
+  await run(PROJECT, 'readwrite', (s) => s.put({ draft_id: draft.id } satisfies CurrentPointer, CURRENT))
+  return summaryOf(stored)
 }
+
+// A project kept the old way, as the single current project, is moved to an
+// entry of its own the first time it is read.
+async function migrate(): Promise<void> {
+  const current = await run<CurrentPointer | OldCurrent | undefined>(PROJECT, 'readonly', (s) => s.get(CURRENT))
+  if (!current || !('json' in current)) return
+  try {
+    const draft = JSON.parse(current.json) as Draft
+    if (typeof draft.id !== 'string') return
+    const at = current.savedAt * 1000
+    const stored: StoredProject = {
+      draft_id: draft.id,
+      draft_name: draft.name ?? '',
+      tm_draft_create: at,
+      tm_draft_modified: at,
+      tm_duration: draft.duration ?? 0,
+      json: current.json,
+    }
+    await run(PROJECT, 'readwrite', (s) => s.put(stored, draft.id))
+    await run(PROJECT, 'readwrite', (s) => s.put({ draft_id: draft.id } satisfies CurrentPointer, CURRENT))
+  } catch {
+    // Unreadable: leave it; there is nothing to move.
+  }
+}
+
+// Every saved project, most recently changed first.
+export async function listProjects(): Promise<ProjectSummary[]> {
+  await migrate()
+  const all = await run<(StoredProject | CurrentPointer)[]>(PROJECT, 'readonly', (s) => s.getAll())
+  return all
+    .filter((p): p is StoredProject => 'json' in p && typeof p.draft_id === 'string')
+    .map(summaryOf)
+    .sort((a, b) => b.tm_draft_modified - a.tm_draft_modified)
+}
+
+// The project with this id, or the one open last time.
+export async function loadProject(id?: string): Promise<string | null> {
+  return (await loadProjectEntry(id))?.json ?? null
+}
+
+// The same, with the list of media files it has (null when it predates that).
+export async function loadProjectEntry(id?: string): Promise<{ json: string; media: string[] | null } | null> {
+  await migrate()
+  const key = id ?? (await run<CurrentPointer | undefined>(PROJECT, 'readonly', (s) => s.get(CURRENT)))?.draft_id
+  if (!key) return null
+  const stored = await run<StoredProject | undefined>(PROJECT, 'readonly', (s) => s.get(key))
+  return stored ? { json: stored.json, media: stored.media ?? null } : null
+}
+
+// Keys of every stored media file.
+export async function storedMediaKeys(): Promise<string[]> {
+  return (await run<IDBValidKey[]>(MEDIA, 'readonly', (s) => s.getAllKeys())).map(String)
+}
+
+// Makes a project the one that opens next time, without counting as a change.
+export const setCurrentProject = (id: string): Promise<unknown> =>
+  run(PROJECT, 'readwrite', (s) => s.put({ draft_id: id } satisfies CurrentPointer, CURRENT))
+
+export const deleteProject = (id: string): Promise<unknown> =>
+  run(PROJECT, 'readwrite', (s) => s.delete(id))
 
 export const saveMedia = (key: string, file: File): Promise<unknown> =>
   run(MEDIA, 'readwrite', (s) => s.put({ key, file } satisfies StoredMedia))

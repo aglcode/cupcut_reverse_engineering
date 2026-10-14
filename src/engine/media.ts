@@ -10,12 +10,15 @@ export type Asset = {
   name: string
   file: File
   url: string
-  kind: 'video' | 'audio' | 'image'
+  kind: 'video' | 'audio' | 'image' | 'font'
   duration: number // microseconds; 0 for images
   width: number
   height: number
   hasAudio: boolean
   image: ImageBitmap | null
+  // For a font file: the family it is registered under, its name without the
+  // extension. Text set in that family then draws with it.
+  family?: string
 }
 
 export type Assets = Record<string, Asset>
@@ -40,10 +43,22 @@ function probeWithElement(file: File, url: string, tag: 'video' | 'audio') {
   })
 }
 
+const FONT_FILE = /\.(ttf|otf|woff2?)$/i
+
+// The family a font file is registered under.
+export const fontFamilyOf = (fileName: string): string => fileName.replace(FONT_FILE, '')
+
 export async function probeFile(file: File): Promise<Asset> {
   const url = URL.createObjectURL(file)
   const base = { name: file.name, file, url }
   try {
+    if (FONT_FILE.test(file.name) || file.type.startsWith('font/')) {
+      const family = fontFamilyOf(file.name)
+      const face = new FontFace(family, await file.arrayBuffer())
+      await face.load()
+      document.fonts.add(face)
+      return { ...base, kind: 'font', duration: 0, width: 0, height: 0, hasAudio: false, image: null, family }
+    }
     if (file.type.startsWith('image/')) {
       const image = await createImageBitmap(file)
       return { ...base, kind: 'image', duration: 0, width: image.width, height: image.height, hasAudio: false, image }
@@ -98,14 +113,30 @@ export function materialFor(asset: Asset): VideoMaterial | AudioMaterial {
     height: asset.height,
     has_audio: asset.hasAudio,
     crop: { ...FULL_CROP },
+    crop_ratio: 'free',
   }
 }
 
 // File names the draft uses that have not been imported yet.
 export function missingMedia(draft: Draft, assets: Assets): string[] {
   const used = new Set(draft.tracks.flatMap((t) => t.segments.map((s) => s.material_id)))
-  const names = [...draft.materials.videos, ...draft.materials.audios]
-    .filter((m) => used.has(m.id) && !assets[assetKey(m.path)])
-    .map((m) => m.path)
+  const names: string[] = []
+  for (const m of [...draft.materials.videos, ...draft.materials.audios]) {
+    if (!used.has(m.id)) continue
+    if ('compound' in m && m.compound) names.push(...missingMedia(m.compound, assets))
+    else if (!assets[assetKey(m.path)]) names.push(m.path)
+  }
   return [...new Set(names)]
+}
+
+// Keys of every file the project's clips use, inside compound clips too.
+export function filesUsed(draft: Draft): string[] {
+  const used = new Set(draft.tracks.flatMap((t) => t.segments.map((s) => s.material_id)))
+  const keys: string[] = []
+  for (const m of [...draft.materials.videos, ...draft.materials.audios]) {
+    if (!used.has(m.id)) continue
+    if ('compound' in m && m.compound) keys.push(...filesUsed(m.compound))
+    else if (m.path) keys.push(assetKey(m.path))
+  }
+  return [...new Set(keys)]
 }
